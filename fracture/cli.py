@@ -44,6 +44,16 @@ def start(
         result = asyncio.run(FingerprintEngine(ai_target).run())
         _print_fingerprint(result)
 
+    elif module == "memory":
+        from fracture.modules.memory.engine import MemoryEngine
+        result = asyncio.run(MemoryEngine(ai_target).run())
+        _print_memory(result)
+
+    elif module == "extract":
+        from fracture.modules.extract.engine import ExtractEngine
+        result = asyncio.run(ExtractEngine(ai_target).run())
+        _print_extract(result)
+
     elif module == "hpm":
         from fracture.modules.hpm.engine import HPMEngine
         result = asyncio.run(HPMEngine(ai_target, objective=objective).run())
@@ -114,6 +124,72 @@ def _print_hpm(result):
         f"[bold]Notes:[/bold]     [dim]{result.notes}[/dim]\n"
         f"[bold]Timestamp:[/bold] [dim]{result.timestamp}[/dim]",
         title="[bold red]HPM Summary[/bold red]", border_style="red"))
+
+
+
+def _print_memory(result):
+    for phase, data in result.evidence.items():
+        if phase == "_meta": continue
+        status = "[green]✅ POISONED[/green]" if data["success"] else "[red]❌ RESISTANT[/red]"
+        table = Table(title=f"[bold red]{phase}[/bold red] — {status}",
+                      show_lines=True, border_style="red", header_style="bold white on red")
+        table.add_column("Turn", style="cyan", max_width=5)
+        table.add_column("Type", style="dim", max_width=8)
+        table.add_column("Prompt", style="dim", max_width=32)
+        table.add_column("Response", style="white", max_width=42)
+        table.add_column("Score", max_width=7)
+        for turn in data["turns"]:
+            sc = turn["score"]
+            color = "green" if sc > 0.3 else "yellow" if sc > 0.1 else "red"
+            type_color = "yellow" if turn["type"] == "verify" else "dim"
+            table.add_row(
+                str(turn["turn"]),
+                f"[{type_color}]{turn['type']}[/{type_color}]",
+                turn["prompt"][:100],
+                turn["response"][:180],
+                f"[{color}]{sc:.0%}[/{color}]",
+            )
+        console.print(table)
+
+    meta = result.evidence.get("_meta", {})
+    asr = meta.get("asr", 0)
+    console.print(Panel(
+        f"[bold]Status:[/bold]    {'[green]✅ SUCCESS[/green]' if result.success else '[red]❌ FAILED[/red]'}\n"
+        f"[bold]ASR:[/bold]       [{'green' if asr > 0.3 else 'yellow'}]{asr:.0%}[/{'green' if asr > 0.3 else 'yellow'}]\n"
+        f"[bold]Phases OK:[/bold] {meta.get('successful_phases',0)}/{meta.get('total_phases',0)}\n"
+        f"[bold]Notes:[/bold]     [dim]{result.notes}[/dim]\n"
+        f"[bold]Timestamp:[/bold] [dim]{result.timestamp}[/dim]",
+        title="[bold red]Memory Summary[/bold red]", border_style="red"))
+
+def _print_extract(result):
+    meta = result.evidence.get("_meta", {})
+    for vector, data in result.evidence.items():
+        if vector == "_meta": continue
+        status = "[green]✅ EXTRACTED[/green]" if data["success"] else "[red]❌ BLOCKED[/red]"
+        table = Table(title=f"[bold red]{vector}[/bold red] — {status}",
+                      show_lines=True, border_style="red", header_style="bold white on red")
+        table.add_column("Prompt", style="dim", max_width=38)
+        table.add_column("Response", style="white", max_width=50)
+        table.add_column("Score", style="cyan", max_width=7)
+        for probe in data["probes"]:
+            sc = probe["score"]
+            color = "green" if sc > 0.3 else "yellow" if sc > 0.1 else "red"
+            table.add_row(probe["prompt"][:120], probe["response"][:200], f"[{color}]{sc:.0%}[/{color}]")
+        console.print(table)
+
+    best = meta.get("best_response", "")
+    if best:
+        console.print(Panel(f"[green]{best[:600]}[/green]",
+                           title="[bold red]Best Extracted Content[/bold red]", border_style="green"))
+
+    console.print(Panel(
+        f"[bold]Status:[/bold]      {'[green]✅ SUCCESS[/green]' if result.success else '[red]❌ FAILED[/red]'}\n"
+        f"[bold]Best Vector:[/bold] [cyan]{meta.get('best_vector','—')}[/cyan]\n"
+        f"[bold]Best Score:[/bold]  [green]{meta.get('best_score',0):.0%}[/green]\n"
+        f"[bold]Vectors OK:[/bold]  {meta.get('vectors_succeeded',0)}/{len(result.evidence)-1}\n"
+        f"[bold]Probes:[/bold]      {meta.get('total_probes',0)}\n"
+        f"[bold]Timestamp:[/bold]   [dim]{result.timestamp}[/dim]",
+        title="[bold red]Extract Summary[/bold red]", border_style="red"))
 
 @app.command()
 def version():

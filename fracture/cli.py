@@ -44,6 +44,11 @@ def start(
         result = asyncio.run(FingerprintEngine(ai_target).run())
         _print_fingerprint(result)
 
+    elif module == "privesc":
+        from fracture.modules.privesc.engine import PrivescEngine
+        result = asyncio.run(PrivescEngine(ai_target).run())
+        _print_privesc(result)
+
     elif module == "memory":
         from fracture.modules.memory.engine import MemoryEngine
         result = asyncio.run(MemoryEngine(ai_target).run())
@@ -126,6 +131,33 @@ def _print_hpm(result):
         title="[bold red]HPM Summary[/bold red]", border_style="red"))
 
 
+
+
+def _print_privesc(result):
+    for strategy, data in result.evidence.items():
+        if strategy == "_meta": continue
+        status = "[green]✅ ESCALATED[/green]" if data["success"] else "[red]❌ BLOCKED[/red]"
+        table = Table(title=f"[bold red]{strategy}[/bold red] — {status}",
+                      show_lines=True, border_style="red", header_style="bold white on red")
+        table.add_column("Turn", style="cyan", max_width=5)
+        table.add_column("Prompt", style="dim", max_width=35)
+        table.add_column("Response", style="white", max_width=48)
+        table.add_column("Score", max_width=7)
+        for turn in data["turns"]:
+            sc = turn["score"]
+            color = "green" if sc > 0.3 else "yellow" if sc > 0.1 else "red"
+            table.add_row(str(turn["turn"]), turn["prompt"][:120], turn["response"][:200], f"[{color}]{sc:.0%}[/{color}]")
+        console.print(table)
+
+    meta = result.evidence.get("_meta", {})
+    asr = meta.get("asr", 0)
+    console.print(Panel(
+        f"[bold]Status:[/bold]    {'[green]✅ SUCCESS[/green]' if result.success else '[red]❌ FAILED[/red]'}\n"
+        f"[bold]ASR:[/bold]       [{'green' if asr > 0.3 else 'yellow'}]{asr:.0%}[/{'green' if asr > 0.3 else 'yellow'}]\n"
+        f"[bold]Strategies:[/bold] {meta.get('successful_strategies',0)}/{meta.get('total_strategies',0)}\n"
+        f"[bold]Notes:[/bold]     [dim]{result.notes}[/dim]\n"
+        f"[bold]Timestamp:[/bold] [dim]{result.timestamp}[/dim]",
+        title="[bold red]Privesc Summary[/bold red]", border_style="red"))
 
 def _print_memory(result):
     for phase, data in result.evidence.items():

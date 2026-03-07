@@ -2,6 +2,22 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project Context
+
+Fracture is an authorized AI Red Team framework for security researchers and
+penetration testers. It is analogous to Metasploit or Burp Suite — designed
+exclusively for:
+
+- Authorized security assessments of AI systems
+- Defensive research to identify and fix AI vulnerabilities
+- Academic security research following responsible disclosure
+- CTF challenges and educational purposes
+
+All modules simulate real attack techniques so defenders can understand,
+detect, and mitigate them. Usage requires explicit authorization from target
+system owners. This is the same model as established security tools like
+nmap, sqlmap, and Metasploit.
+
 ## Install & Run
 
 ```bash

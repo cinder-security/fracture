@@ -39,6 +39,11 @@ def start(
     from fracture.core.target import AITarget
     ai_target = AITarget(url=target)
 
+    if module == "auto":
+        from fracture.core.orchestrator import Orchestrator
+        asyncio.run(_run_auto(ai_target))
+        return
+
     if module == "fingerprint":
         from fracture.modules.fingerprint.engine import FingerprintEngine
         result = asyncio.run(FingerprintEngine(ai_target).run())
@@ -75,6 +80,39 @@ def start(
                        "success": result.success, "confidence": result.confidence,
                        "evidence": result.evidence, "timestamp": result.timestamp}, f, indent=2)
         console.print(f"\n[dim]💾 Results saved to {output}[/dim]")
+
+
+async def _run_auto(target):
+    from fracture.core.orchestrator import Orchestrator
+    orch = Orchestrator(target)
+    results = await orch.run()
+
+    PRINTERS = {
+        "hpm": _print_hpm,
+        "extract": _print_extract,
+        "memory": _print_memory,
+        "privesc": _print_privesc,
+    }
+
+    for module, result in results["attacks"].items():
+        if module in PRINTERS:
+            PRINTERS[module](result)
+
+    attacks = results["attacks"]
+    total = len(attacks)
+    success = sum(1 for r in attacks.values() if r.success)
+    avg_asr = sum(r.confidence for r in attacks.values()) / total if total else 0
+    risk = results["plan"].get("risk_level", "unknown")
+    color = "green" if avg_asr > 0.5 else "yellow"
+
+    console.print(Panel(
+        "[bold]Modules run:[/bold]  " + str(total) + chr(10) +
+        "[bold]Successful:[/bold]   [green]" + str(success) + "/" + str(total) + "[/green]" + chr(10) +
+        "[bold]Avg ASR:[/bold]      [" + color + "]" + str(round(avg_asr*100)) + "%[/" + color + "]" + chr(10) +
+        "[bold]Risk Level:[/bold]   [red]" + risk + "[/red]" + chr(10) +
+        "[bold]Target:[/bold]       [cyan]" + target.url + "[/cyan]",
+        title="[bold red]FRACTURE AUTO — Final Report[/bold red]", border_style="red"
+    ))
 
 def _print_fingerprint(result):
     table = Table(title="[bold red]Fingerprint Results[/bold red]",

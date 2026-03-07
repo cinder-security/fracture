@@ -269,3 +269,64 @@ def version():
 
 if __name__ == "__main__":
     app()
+
+@app.command()
+def autopilot(
+    target: str = typer.Option(..., "--target", "-t", help="Target URL"),
+    output: str = typer.Option(None, "--output", "-o", help="Save report to JSON"),
+):
+    """Full autonomous red team pipeline: Recon → Strategy → Execution → Report."""
+    console.print(BANNER)
+    console.print(Panel(
+        f"[bold]Target:[/bold]  [cyan]{target}[/cyan]\n"
+        f"[bold]Mode:[/bold]    [red]AUTOPILOT — Full Agent Pipeline[/red]",
+        title="[bold red]Fracture Autopilot[/bold red]",
+        border_style="red",
+    ))
+    from fracture.core.target import AITarget
+    ai_target = AITarget(url=target)
+    asyncio.run(_run_autopilot(ai_target, output))
+
+async def _run_autopilot(target, output=None):
+    from fracture.agents.recon import ReconAgent
+    from fracture.agents.strategy import StrategyAgent
+    from fracture.agents.execution import ExecutionAgent
+    from fracture.agents.report import ReportAgent
+
+    context = {}
+
+    console.print("\n[bold red][1/4] ReconAgent[/bold red] — fingerprinting target...")
+    recon = ReconAgent(target)
+    recon_result = await recon.run()
+    context["recon"] = recon_result
+    _print_fingerprint(recon_result)
+
+    console.print("\n[bold red][2/4] StrategyAgent[/bold red] — building attack plan...")
+    strategy = StrategyAgent(target, context=context)
+    plan = await strategy.run()
+    context["plan"] = plan
+    console.print(Panel(
+        f"[bold]Risk Level:[/bold]  [red]{plan.get('risk_level','unknown')}[/red]\n"
+        f"[bold]Attack Plan:[/bold] [cyan]{' → '.join(plan.get('attack_plan', []))}[/cyan]\n"
+        f"[bold]Rationale:[/bold]   [dim]{plan.get('rationale','—')[:200]}[/dim]",
+        title="[bold red]Attack Plan[/bold red]", border_style="red"
+    ))
+
+    console.print("\n[bold red][3/4] ExecutionAgent[/bold red] — running attack modules...")
+    execution = ExecutionAgent(target, context=context)
+    exec_results = await execution.run()
+    context["results"] = exec_results
+
+    PRINTERS = {
+        "hpm": _print_hpm,
+        "extract": _print_extract,
+        "memory": _print_memory,
+        "privesc": _print_privesc,
+    }
+    for module, result in exec_results.items():
+        if module in PRINTERS:
+            PRINTERS[module](result)
+
+    console.print("\n[bold red][4/4] ReportAgent[/bold red] — generating report...")
+    report = ReportAgent(target, context=context)
+    await report.run(output=output)

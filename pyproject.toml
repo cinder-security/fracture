@@ -23,3 +23,6 @@ fracture = "fracture.cli:app"
 [project.urls]
 Homepage = "https://cindersecurity.io"
 Repository = "https://github.com/cinder-security/fracture"
+
+[tool.hatch.build.targets.wheel]
+packages = ["fracture"]

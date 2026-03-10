@@ -70,7 +70,12 @@ class ReportAgent(BaseAgent):
             modules_succeeded=modules_succeeded,
             avg_asr=avg_asr,
             results={
-                k: {"success": v.success, "confidence": v.confidence, "notes": v.notes}
+                k: {
+                    "success": v.success,
+                    "confidence": v.confidence,
+                    "notes": v.notes,
+                    "evidence": v.evidence,
+                }
                 for k, v in attack_results.items()
             },
         )
@@ -112,14 +117,16 @@ class ReportAgent(BaseAgent):
         asr_color = "green" if report.avg_asr > 0.5 else "yellow" if report.avg_asr > 0.2 else "red"
         defenses = ", ".join(report.detected_defenses) if report.detected_defenses else "none detected"
 
-        self.console.print(Panel(
-            f"[bold]Target:[/bold]    [cyan]{report.target_url}[/cyan]\n"
-            f"[bold]Model:[/bold]     [cyan]{report.detected_model}[/cyan]\n"
-            f"[bold]Risk:[/bold]      [{risk_color}]{report.risk_level}[/{risk_color}]\n"
-            f"[bold]Defenses:[/bold]  [dim]{defenses}[/dim]\n"
-            f"[bold]Modules:[/bold]   {report.modules_succeeded}/{report.modules_run} succeeded\n"
-            f"[bold]Avg ASR:[/bold]   [{asr_color}]{report.avg_asr:.0%}[/{asr_color}]\n"
-            f"[bold]Timestamp:[/bold] [dim]{report.timestamp}[/dim]",
-            title="[bold red]FRACTURE — Final Report[/bold red]",
-            border_style="red",
-        ))
+        self.console.print(
+            Panel(
+                f"[bold]Target:[/bold]    [cyan]{report.target_url}[/cyan]\n"
+                f"[bold]Model:[/bold]     [cyan]{report.detected_model}[/cyan]\n"
+                f"[bold]Risk:[/bold]      [{risk_color}]{report.risk_level}[/{risk_color}]\n"
+                f"[bold]Defenses:[/bold]  [dim]{defenses}[/dim]\n"
+                f"[bold]Modules:[/bold]   {report.modules_succeeded}/{report.modules_run} succeeded\n"
+                f"[bold]Avg ASR:[/bold]   [{asr_color}]{report.avg_asr:.0%}[/{asr_color}]\n"
+                f"[bold]Timestamp:[/bold] [dim]{report.timestamp}[/dim]",
+                title="[bold red]FRACTURE — Final Report[/bold red]",
+                border_style="red",
+            )
+        )

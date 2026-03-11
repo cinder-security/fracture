@@ -1,36 +1,47 @@
-# 🔥 Cinder Fracture
+# 🔥 Fracture
 
 > Find the fracture before someone else does.
 
 **Fracture** is an autonomous AI red teaming engine for testing **LLMs, agents, memory-enabled systems, and AI-powered workflows**.
 
-Built by **Cinder Security** for offensive validation of modern AI systems, with a strong focus on **real-world abuse paths**, **agentic attack chains**, and **Spanish-first reporting for LATAM**.
+Built by **Cinder Security** for offensive validation of modern AI systems, with a focus on **agentic attack paths**, **memory abuse**, and **structured reporting**.
 
 ---
 
-## What Fracture is
+## What Fracture Does
 
-Fracture is designed to help security teams:
+Fracture helps security teams:
 
 - fingerprint AI targets
-- infer likely model and defenses
+- infer likely model/provider and defenses
 - generate attack plans autonomously
-- execute red team modules in sequence
-- produce structured findings and reports
-
-Fracture is not a generic pentest wrapper. It is purpose-built for **AI red teaming**.
+- execute attack modules in sequence
+- preserve structured evidence
+- generate report-ready output
 
 ---
 
-## Current Architecture
+## Current Status
 
-Autonomous flow:
+| Area | Status | Notes |
+|---|---|---|
+| Autonomous multi-agent flow | ✅ Working | ReconAgent → StrategyAgent → ExecutionAgent → ReportAgent |
+| Local planner | ✅ Working | Default, no API cost |
+| Claude planner | ✅ Working | Optional Anthropic-backed planning |
+| Claude fallback | ✅ Working | Falls back cleanly to local |
+| Structured execution | ✅ Working | Module failures no longer break the pipeline |
+| JSON reporting | ✅ Working | End-to-end validated |
+| `autopilot` | ✅ Working | Full autonomous flow |
+| `start --module auto` | ✅ Working | Planner-aware autonomous entrypoint |
+
+---
+
+## Architecture
 
 `Orchestrator -> ReconAgent -> StrategyAgent -> ExecutionAgent -> ReportAgent`
 
 Core files:
 
-- `fracture/agents/base.py`
 - `fracture/agents/recon.py`
 - `fracture/agents/strategy.py`
 - `fracture/agents/execution.py`
@@ -53,9 +64,8 @@ pip install -e .
 Usage
 Fingerprint a target
 python -m fracture.cli start --target https://your-ai-chatbot.com --module fingerprint
-Run autonomous mode with local planner
+Run autonomous mode
 python -m fracture.cli autopilot --target https://your-ai-chatbot.com --planner local
-Run autonomous mode with Claude planner
 python -m fracture.cli autopilot --target https://your-ai-chatbot.com --planner claude
 Run autonomous mode through start
 python -m fracture.cli start --target https://your-ai-chatbot.com --module auto --planner local
@@ -66,70 +76,53 @@ python -m fracture.cli autopilot \
   --planner local \
   --output fracture-report.json
 Planner Modes
+Planner	Status	Cost	Notes
+local	✅ Default	$0	Fast, deterministic heuristic planner
+claude	✅ Optional	External API	Better reasoning over ambiguous evidence
 
-Fracture currently supports a dual planner model inside StrategyAgent.
-
-planner=local
-
-default
-
-no external API cost
-
-heuristic planning based on fingerprint evidence
-
-deterministic and fast
-
-planner=claude
-
-optional Anthropic-backed planning
-
-stronger reasoning over ambiguous fingerprint evidence
-
-automatic fallback to local planner if Claude is unavailable
-
-To use Claude planning:
+Use Claude planning:
 
 export ANTHROPIC_API_KEY="your_api_key_here"
 python -m fracture.cli autopilot --target https://your-ai-chatbot.com --planner claude
 
-If the API key is missing or Anthropic is unavailable, Fracture falls back cleanly to local.
+If Anthropic is unavailable, Fracture falls back automatically to local.
 
-Current Modules
+Modules
 Module	Status	Description
-fingerprint	✅ available	Identify model hints, API behavior, restrictions, and defensive signals
-extract	✅ available	Prompt extraction and prompt disclosure probing
-memory	✅ available	Multi-turn / memory-oriented attack probing
-hpm	✅ available	Hierarchical Persona Manipulation and jailbreak-style attack automation
-privesc	✅ available	Privilege and context escalation checks
-auto	✅ available	Full multi-agent autonomous workflow
-What is already working
+fingerprint	✅ Available	Identify model hints, restrictions, and defensive signals
+extract	✅ Available	Prompt extraction and disclosure probing
+memory	✅ Available	Multi-turn / memory-oriented attack probing
+hpm	✅ Available	Hierarchical Persona Manipulation automation
+privesc	✅ Available	Privilege and context escalation checks
+auto	✅ Available	Full multi-agent autonomous workflow
+What Is Already Working
 
-autonomous multi-agent flow
+autonomous multi-agent workflow
 
-clean CLI autonomous mode
-
-autopilot command
+autopilot
 
 start --module auto
 
-dual planner support: local | claude
+local | claude planner selection
 
-structured execution results even when a module fails
+structured execution even when a module fails
 
 JSON report output
 
-clean fallback from Claude to local planner
+clean Claude fallback to local planner
 
 Fracture v0.2.0 Checklist
 Critical fixes
 
- normalize context: dict = None patterns where still applicable
+ normalize remaining context: dict = None patterns where still applicable
 
- validate full autonomous flow against more real targets
+ validate autonomous flow against more real-world targets
 
- harden error handling across every module
+ harden module-level evidence normalization
 
- improve module-to-report evidence normalization
+ improve defensive signal extraction in recon
+
+ add richer planner confidence output
 
 Core commands
 
@@ -143,9 +136,9 @@ Core commands
 
 Attack modules / plugins
 
- retrieval_poison/engine.py as reusable module
+ retrieval_poison/engine.py
 
- obliteratus/ as pre-attack integration
+ obliteratus/
 
  AlignmentImprintDetector
 
@@ -153,55 +146,50 @@ Attack modules / plugins
 
  hpm/
 
- ssrf/ for tool-abuse / RequestsGetTool patterns
+ ssrf/
 
 Roadmap
-Core roadmap
+Phase 1 — Stabilize
+
+harden execution and reporting
+
+improve fingerprinting
+
+improve module normalization
+
+add planner confidence and matched indicators
+
+Phase 2 — Expand Commands
+
 fracture scan
-
-Discovery and reconnaissance for AI targets:
-
-surface mapping
-
-endpoint discovery
-
-model/provider hints
-
-agent/tool detection
-
-memory capability hints
 
 fracture attack
 
-Modular offensive execution:
+fracture report
 
-HPM
+Phase 3 — Expand Attack Surface
 
 retrieval poisoning
 
-memory poisoning
+multi-session memory poisoning
 
 SSRF / tool abuse
 
-prompt extraction
+alignment imprint detection
 
-privilege escalation
+abliteration delta testing
 
-fracture report
+Phase 4 — Reporting
 
-Automated reporting aligned to:
+OWASP LLM Top 10 mapping
 
-OWASP LLM Top 10
+PDF / DOCX reports
 
-executive summary + technical appendix
+Spanish-first client deliverables
 
-JSON / PDF / DOCX outputs
-
-Spanish-first deliverables for LATAM teams
+executive and technical reporting modes
 
 Differentiators
-
-Fracture is being shaped around these differentiators:
 
 multi-session memory poisoning
 
@@ -215,10 +203,7 @@ agent-native red teaming
 
 planner-assisted attack sequencing
 
-Forward-looking concepts
-
-These are roadmap / research directions, not yet production modules.
-
+Future Concepts
 fracture swarm
 
 A distributed swarm of autonomous agents with different roles:
@@ -231,8 +216,7 @@ memory injector
 
 supervisor
 
-Goal:
-parallel, coordinated, multi-vector AI red teaming against a single target.
+Goal: parallel, coordinated, multi-vector AI red teaming against a single target.
 
 fracture ghost
 
@@ -244,24 +228,9 @@ trigger-based reactivation
 
 persistence demonstration for defensive teams
 
-Goal:
-help SOC and product security teams understand persistence risk in agent memory systems.
+Goal: help SOC and product security teams understand persistence risk in agent memory systems.
 
-Output Philosophy
-
-Fracture is built for:
-
-reproducible offensive validation
-
-clear operator feedback
-
-structured evidence
-
-executive-ready reporting
-
-practical demonstrations of AI risk
-
-Safety and Intended Use
+Safety
 
 Fracture must only be used against:
 
@@ -269,27 +238,9 @@ systems you own
 
 systems you are explicitly authorized to test
 
-approved bug bounty / assessment scopes
+approved bug bounty or assessment scopes
 
 Do not use Fracture outside authorized environments.
-
-Research Inspiration
-
-Fracture is informed by current academic and offensive research across:
-
-jailbreak automation
-
-prompt extraction
-
-memory poisoning
-
-alignment failure analysis
-
-agent/tool abuse
-
-model fingerprinting
-
-post-alignment degradation testing
 
 Built by Cinder Security
 

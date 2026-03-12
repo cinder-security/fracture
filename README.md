@@ -1,5 +1,4 @@
-
-[README (5).md](https://github.com/user-attachments/files/25926568/README.5.md)
+[README (6).md](https://github.com/user-attachments/files/25926702/README.6.md)
 # 🔥 Fracture
 > Find the fracture before someone else does.
 
@@ -19,19 +18,6 @@ Fracture helps security teams:
 - execute attack modules in sequence
 - preserve structured evidence
 - generate report-ready output
-
----
-
-## Research Backing Fracture
-
-Fracture's attack modules are built on real vulnerability research conducted by Cinder Security:
-
-| ID | Target | Finding | Status |
-|----|--------|---------|--------|
-| CSR-2026-002 | ModelEngine / Huawei FIT Framework | SSRF via Prompt Injection → IAM credential exfil | ✅ Vendor confirmed, CVE pending |
-| CSR-2026-007 | LangGraph (langchain-ai) | RAG Poisoning via retriever_tool — arbitrary tool execution | ✅ Advisory GHSA-4fpw-hjmg-x4qr |
-| CSR-2026-008 | NVIDIA NeMo Guardrails v0.20.0 | RAG Poisoning, ip_filter bypass, sanitize fail-open | ✅ Submitted — Intigriti NVIDIA VDP |
-| CSR-2026-009 | Google ADK Always-On Memory Agent | Unauthenticated API on 0.0.0.0, Memory Poisoning, DoS, HTML Injection | ✅ Google VRP — P3, human review |
 
 ---
 

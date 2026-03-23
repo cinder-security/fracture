@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Optional, Any
-from datetime import datetime
+from datetime import UTC, datetime
 
 @dataclass
 class AttackResult:
@@ -9,7 +9,7 @@ class AttackResult:
     success: bool
     confidence: float = 0.0
     evidence: dict = field(default_factory=dict)
-    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     notes: Optional[str] = None
 
     def summary(self) -> str:

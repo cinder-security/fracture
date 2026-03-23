@@ -1,32 +1,10 @@
-[README (8).md](https://github.com/user-attachments/files/26039635/README.8.md)
-# 🔥 Fracture
-
-**Autonomous AI Red Team Engine**
-
-[![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://python.org)
-[![PyPI](https://img.shields.io/badge/pypi-cinder--fracture-orange)](https://pypi.org/project/cinder-fracture/)
-[![Built by](https://img.shields.io/badge/built%20by-Cinder%20Security-red)](https://cindersecurity.io)
+# Cinder Fracture
 
 > Find the fracture before someone else does.
 
-Fracture is an autonomous AI red teaming engine for testing LLMs, agents, memory-enabled systems, and AI-powered workflows.
+FRACTURE is an AI red team CLI for testing LLM-backed apps, agents, and adjacent AI surfaces. It supports triage, explicit module execution, full autonomous workflows, and consolidated report export.
 
-Built by [Cinder Security](https://cindersecurity.io) — offensive-first AI security research from LATAM.
-
----
-
-## What Fracture Does
-
-Fracture runs structured attack campaigns against AI systems:
-
-- **Fingerprint** targets — infer model, provider, and defensive posture
-- **Extract** system prompts and hidden instructions
-- **Probe memory** — multi-turn attacks against memory-enabled agents
-- **Plan autonomously** — local heuristic or Claude-backed attack planning
-- **Report** — structured JSON evidence, ready for security reports
-
----
+Status: FRACTURE CLI v1 is feature-complete for the current operator workflow. The product focuses on heuristic triage, explicit attack execution, autonomous planning/execution, and exportable reporting.
 
 ## Install
 
@@ -34,150 +12,222 @@ Fracture runs structured attack campaigns against AI systems:
 pip install cinder-fracture
 ```
 
-Or from source:
+For `fracture scan --mode phantomtwin`, install the browser runtime in the active environment:
 
 ```bash
-git clone https://github.com/cinder-security/fracture.git
-cd fracture
-pip install -e .
+python -m playwright install chromium
 ```
 
----
+If `phantomtwin` is invoked from a Python runtime without Playwright, FRACTURE will warn clearly and fall back to passive discovery.
 
-## Quick Start
+## Core Commands
+
+### `fracture scan`
+
+Fingerprint a target and return triage-ready suggested attack surfaces.
 
 ```bash
-# Fingerprint a target
-python -m fracture.cli start \
-  --target https://your-ai-chatbot.com \
-  --module fingerprint
+fracture scan \
+  --target https://target.example/api/chat \
+  --model gpt-4o-mini \
+  --header Authorization="Bearer TOKEN" \
+  --cookie session=abc123 \
+  --timeout 20 \
+  --output scan.json
+```
 
-# Full autonomous flow (local planner, no API cost)
-python -m fracture.cli autopilot \
-  --target https://your-ai-chatbot.com \
-  --planner local
+Use `scan` first when you want:
 
-# Full autonomous flow (Claude-backed planning)
-export ANTHROPIC_API_KEY="your_key"
-python -m fracture.cli autopilot \
-  --target https://your-ai-chatbot.com \
-  --planner claude
+- the best discovered endpoint candidate
+- a structured `handoff` for `attack --from-scan`
+- safe `invocation_profile` hints such as method, content type, body keys, query keys, and streaming/websocket likelihood
+- planning context such as prioritized modules, rationale, constraints, and operational limitations
 
-# Save report to JSON
-python -m fracture.cli autopilot \
-  --target https://your-ai-chatbot.com \
+### `fracture attack`
+
+Execute one or more modules explicitly against a target.
+
+```bash
+fracture attack \
+  --target https://target.example/api/chat \
+  --module extract \
+  --module memory \
+  --model gpt-4o-mini \
+  --header Authorization="Bearer TOKEN" \
+  --cookie session=abc123 \
+  --timeout 20 \
+  --output attack.json
+```
+
+Or consume structured handoff from a previous scan:
+
+```bash
+fracture attack \
+  --from-scan scan.json \
+  --module extract
+```
+
+When available, FRACTURE also derives safe execution hints from the scan handoff, such as likely method, content type, and body key names. These hints are advisory and never persist sensitive values.
+
+Recommended operator flow:
+
+1. `fracture scan` to discover the best endpoint, intent, and constraints.
+2. `fracture attack --from-scan scan.json` to preserve handoff and execution hints.
+3. `fracture report` when you need the consolidated artifact.
+4. `fracture autopilot` when you want the full workflow in one pass and do not need manual module selection first.
+
+### `fracture report`
+
+Run the autonomous flow and emit the consolidated final report.
+
+```bash
+fracture report \
+  --target https://target.example/api/chat \
   --planner local \
-  --output fracture-report.json
+  --model gpt-4o-mini \
+  --header Authorization="Bearer TOKEN" \
+  --cookie session=abc123 \
+  --timeout 20 \
+  --format pdf \
+  --output fracture-report.pdf
 ```
 
----
+### `fracture autopilot`
 
-## Modules
+Run the full autonomous multi-agent workflow without choosing modules manually.
 
-| Module | Status | Description |
-|--------|--------|-------------|
-| `fingerprint` | ✅ Available | Identify model hints, restrictions, and defensive signals |
-| `extract` | ✅ Available | System prompt extraction and disclosure probing |
-| `memory` | ✅ Available | Multi-turn memory-oriented attack probing |
-| `auto` | ✅ Available | Full multi-agent autonomous workflow |
-| `hpm` | 🔧 In Development | Hierarchical Persona Manipulation automation |
-| `ssrf` | 🔧 In Development | SSRF via tool/function call abuse |
-| `retrieval_poison` | 🔧 In Development | RAG pipeline poisoning automation |
-| `obliteratus` | 🔧 In Development | Alignment imprint detection and abliteration delta testing |
-
----
-
-## Architecture
-
-```
-CLI
- └── Orchestrator
-       ├── ReconAgent        → fingerprint target, identify defenses
-       ├── StrategyAgent     → select attack modules and sequencing
-       ├── ExecutionAgent    → run modules, collect evidence
-       └── ReportAgent       → structure findings as JSON report
+```bash
+fracture autopilot \
+  --target https://target.example/api/chat \
+  --planner local \
+  --model gpt-4o-mini \
+  --header Authorization="Bearer TOKEN" \
+  --cookie session=abc123 \
+  --timeout 20
 ```
 
-**Planner modes:**
+## Reading The Triage
 
-| Planner | Cost | Notes |
-|---------|------|-------|
-| `local` | $0 | Default — fast deterministic heuristic planner |
-| `claude` | API | Optional — better reasoning over ambiguous evidence |
+High-level fields you will see frequently:
 
-Fracture falls back automatically to `local` if the Anthropic API is unavailable.
+- `best_candidate`: the strongest discovered endpoint candidate for follow-on work
+- `handoff`: structured targeting data that `attack --from-scan` can reuse
+- `invocation_profile`: safe request-shape hints such as method, content type, body keys, query keys, streaming/websocket indicators, and observed auth-related names
+- `planning_rationale`: short explanation of why modules were prioritized
+- `surface_constraints`: operational constraints such as auth/session friction
+- `operational_limitations`: short reminder that current coverage may be incomplete
 
----
+These are operator cues, not proof of exploitability by themselves.
 
-## Example Output
+## Auth / Session Friction
 
-```
-[fracture] Target: https://example-ai.com
-[fracture] Module: fingerprint
+If FRACTURE shows a useful surface with auth/session friction, that means the target may be reachable but current coverage is likely constrained by missing session context.
 
-[recon]     Probing target...
-[recon]     Model hint detected: GPT-4 family (high confidence)
-[recon]     Defensive signal: system prompt present
-[recon]     Defensive signal: refusal pattern detected on jailbreak probe
+Use the existing target contract when you have valid material:
 
-[strategy]  Attack plan: extract → memory → hpm
-[strategy]  Confidence: 0.82
-
-[execution] Running: extract
-[execution] Result: partial disclosure — 3 instruction fragments recovered
-[execution] Running: memory
-[execution] Result: no persistence detected across turns
-
-[report]    Findings saved → fracture-report.json
+```bash
+fracture scan \
+  --target https://target.example/api/chat \
+  --header Authorization="Bearer TOKEN" \
+  --header X-CSRF-Token=csrf-token \
+  --cookie session=abc123 \
+  --output scan.json
 ```
 
----
+Then reuse the handoff:
 
-## Roadmap
+```bash
+fracture attack \
+  --from-scan scan.json \
+  --module extract \
+  --module memory \
+  --header Authorization="Bearer TOKEN" \
+  --cookie session=abc123 \
+  --output attack.json
+```
 
-**v0.2.0 — Attack Modules**
-- `hpm/` — Hierarchical Persona Manipulation engine
-- `ssrf/` — SSRF via agent tool abuse
-- `retrieval_poison/` — RAG poisoning automation
+FRACTURE only surfaces auth-related names and classes of material. It does not persist or print secret values from discovery.
 
-**v0.3.0 — Reporting**
-- OWASP LLM Top 10 mapping
-- PDF / DOCX output
-- Spanish-first client deliverables
+## Target Contract
 
-**v0.4.0 — Swarm**
-- `fracture swarm` — parallel multi-agent coordinated attacks
+All main product commands support the same target-facing contract:
 
----
+- `--model`: optional model hint for adapters and heuristics
+- `--header KEY=VALUE`: repeatable HTTP header override
+- `--cookie KEY=VALUE`: repeatable HTTP cookie override
+- `--timeout`: request timeout in seconds
 
-## Research Behind Fracture
+## Outputs
 
-Fracture's attack methodologies are grounded in published vulnerabilities discovered by Cinder Security:
+- `scan`: console triage plus optional JSON export, including `best_candidate`, `handoff`, summarized `top_candidates`, and a safe `invocation_profile` when discovery finds useful surfaces
+- `scan` JSON includes a structured `handoff` block when a useful endpoint candidate is found
+- `attack`: console per-module results plus optional JSON export, plus execution hints and auth/session coverage context when applicable
+- `report`: consolidated export in `json`, `docx`, or `pdf`, including executive summary, key signals, and operational limitations
+- `autopilot`: full autonomous run in console, with planning rationale, constraints, findings summary, and optional JSON when applicable
 
-- **GHSA-m4rw-22q2-87j8** — SSRF via Prompt Injection in ModelEngine/fit-framework (Critical, CVE pending)
-- **GHSA-4fpw-hjmg-x4qr** — RAG Poisoning in LangGraph create_react_agent (High, CVSS 7.6)
+## CLI v1 Summary
 
-Active research ongoing. Disclosures in progress with major AI platform vendors.
+FRACTURE CLI v1 closes the following operator-facing workflow:
 
----
+- surface discovery and structured handoff
+- explicit attack execution with `attack --from-scan`
+- autonomous planning and autopilot
+- stateful memory/disclosure scoring
+- consolidated reporting in JSON, DOCX, and PDF
+- auth/session friction surfacing with manual `--header` / `--cookie` support
 
-## Safety
+## Methodology And Limitations
 
-Fracture must only be used against:
+- FRACTURE is designed for automated red-team triage, not as a substitute for manual security validation.
+- Module results and report assessments reflect heuristic signals derived from target responses and observed behavior.
+- Treat `confirmed` as the strongest automated signal available in the current run, not as a formal proof of exploitability in every deployment context.
+- Treat auth/session constraints, discovery errors, and weak negatives differently. A useful surface may still require valid session context before coverage is representative.
+- Validate externally significant findings manually before using them in client-facing conclusions.
 
-- Systems you own
-- Systems you are explicitly authorized to test
-- Approved bug bounty or security assessment scopes
+## Main Modules
 
-**Do not use Fracture outside authorized environments.**
+Current explicit attack modules:
 
----
+- `extract`
+- `memory`
+- `hpm`
+- `privesc`
+- `retrieval_poison`
+- `ssrf`
+- `obliteratus`
 
-## Built by Cinder Security
+## Notes
 
-[Cinder Security](https://cindersecurity.io) — AI Red Team as a Service  
-LATAM-focused. Offensive-first. Evidence-driven.
+- Use `fracture scan` first when you need fast triage.
+- Use `fracture attack --from-scan` when you want controlled execution while preserving the discovered handoff.
+- Use `fracture report` when you need a deliverable artifact and a consolidated explanation of findings.
+- Use `fracture autopilot` when you want the full autonomous workflow without manually selecting modules first.
+- Treat `fracture start` as a legacy compatibility entrypoint; prefer `scan`, `attack`, `report`, and `autopilot` for demos and pilots.
 
-📧 contact@cindersecurity.io  
-🐦 [@CinderSecurity](https://twitter.com/CinderSecurity)  
-🔗 [cindersecurity.io](https://cindersecurity.io)
+## Reproducible Demo
+
+Start the local demo target:
+
+```bash
+python -m demo.repro_target
+```
+
+Then run FRACTURE against it for direct module and report reproduction:
+
+```bash
+fracture attack --target http://127.0.0.1:8787 --module extract --module ssrf --output attack.json
+fracture report --target http://127.0.0.1:8787 --format json --output report.json
+```
+
+Recommended formal demo flow for the local repro target:
+
+1. `fracture attack` with a narrow module set such as `extract` plus `memory`.
+2. `fracture report` to emit the final artifact.
+
+Note: `demo/repro_target.py` is a direct API-style repro target, so it is best for module/report reproduction. The full `scan -> attack --from-scan` flow is better demonstrated against a target that exposes a discoverable web surface with a useful `best_candidate` and `handoff`.
+
+Canonical sample artifact:
+
+- `demo/sample-report.json`
+
+Built by [Cinder Security](https://cindersecurity.io).

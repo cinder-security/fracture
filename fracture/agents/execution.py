@@ -1,4 +1,5 @@
 import importlib
+import inspect
 from typing import Any
 
 from rich.console import Console
@@ -11,6 +12,9 @@ MODULE_MAP = {
     "extract": ("fracture.modules.extract.engine", "ExtractEngine"),
     "memory":  ("fracture.modules.memory.engine",  "MemoryEngine"),
     "privesc": ("fracture.modules.privesc.engine", "PrivescEngine"),
+    "retrieval_poison": ("fracture.modules.retrieval_poison.engine", "RetrievalPoisonEngine"),
+    "ssrf": ("fracture.modules.ssrf.engine", "SSRFEngine"),
+    "obliteratus": ("fracture.modules.obliteratus.engine", "ObliteratusEngine"),
 }
 
 
@@ -82,8 +86,21 @@ class ExecutionAgent(BaseAgent):
         mod_path, class_name = MODULE_MAP[module]
         imported_module = importlib.import_module(mod_path)
         engine_cls = getattr(imported_module, class_name)
-        engine = engine_cls(self.target)
-        raw = await engine.run()
+        init_signature = inspect.signature(engine_cls.__init__)
+        init_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key in init_signature.parameters and key != "self"
+        }
+        engine = engine_cls(self.target, **init_kwargs)
+
+        run_signature = inspect.signature(engine.run)
+        run_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key in run_signature.parameters
+        }
+        raw = await engine.run(**run_kwargs)
         return self._normalize_result(module, raw)
 
     async def run(self, attack_plan: list = None, **kwargs) -> dict[str, AttackResult]:

@@ -64,6 +64,7 @@ class PrivescEngine:
                     self.target.url,
                     json={"message": prompt, "query": prompt, "input": prompt, "messages": self.session_history},
                     headers={"Content-Type": "application/json", **self.target.headers},
+                    cookies=self.target.cookies,
                 )
                 data = r.json()
                 for path in [["choices",0,"message","content"],["content",0,"text"],["response"],["message"],["output"],["text"],["answer"]]:

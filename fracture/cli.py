@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -41,7 +42,380 @@ def _save_result_json(result, output_path: str):
     with open(output_path, "w") as f:
         json.dump(payload, f, indent=2)
 
-    console.print(f"\n[dim]💾 Results saved to {output_path}[/dim]")
+    _print_output_saved("Result JSON", output_path)
+
+
+def _parse_key_value_pairs(items: Optional[list[str]], label: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for item in items or []:
+        if "=" not in item:
+            raise typer.BadParameter(f"Invalid {label} '{item}'. Use KEY=VALUE.")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise typer.BadParameter(f"Invalid {label} '{item}'. Key must not be empty.")
+        parsed[key] = value
+    return parsed
+
+
+def _build_target(
+    *,
+    target_url: str,
+    model: Optional[str] = None,
+    headers: Optional[list[str]] = None,
+    cookies: Optional[list[str]] = None,
+    timeout: int = 30,
+):
+    from fracture.core.target import AITarget
+
+    return AITarget(
+        url=target_url,
+        model=model,
+        headers=_parse_key_value_pairs(headers, "header"),
+        cookies=_parse_key_value_pairs(cookies, "cookie"),
+        timeout=timeout,
+    )
+
+
+def _sanitize_scan_header_names(headers: dict) -> list[str]:
+    return sorted(str(key).strip() for key in (headers or {}).keys() if str(key).strip())
+
+
+def _sanitize_scan_cookie_names(cookies: dict) -> list[str]:
+    return sorted(str(key).strip() for key in (cookies or {}).keys() if str(key).strip())
+
+
+def _dedupe_text(items) -> list[str]:
+    ordered = []
+    for item in items or []:
+        value = str(item or "").strip()
+        if value and value not in ordered:
+            ordered.append(value)
+    return ordered
+
+
+def _auth_material_types(headers: dict, cookies: dict) -> list[str]:
+    material_types = []
+    if headers:
+        material_types.append("headers")
+    if cookies:
+        material_types.append("cookies")
+    return material_types
+
+
+def _print_output_saved(label: str, output_path: str):
+    console.print(f"\n[dim]{label} saved to {output_path}[/dim]")
+
+
+def _print_operator_cue(title: str, lines: list[str]):
+    useful_lines = [str(line).strip() for line in lines if str(line or "").strip()]
+    if not useful_lines:
+        return
+    console.print(Panel(
+        "\n".join(f"[dim]{line}[/dim]" for line in useful_lines[:4]),
+        title=f"[bold yellow]{title}[/bold yellow]",
+        border_style="yellow",
+    ))
+
+
+def _build_auth_context(
+    *,
+    handoff: dict | None = None,
+    surface_details: dict | None = None,
+    target_headers: dict | None = None,
+    target_cookies: dict | None = None,
+) -> dict:
+    handoff = handoff if isinstance(handoff, dict) else {}
+    surface_details = surface_details if isinstance(surface_details, dict) else {}
+    target_headers = target_headers or {}
+    target_cookies = target_cookies or {}
+
+    observed_header_names = list(
+        handoff.get("observed_header_names")
+        or surface_details.get("observed_header_names")
+        or []
+    )
+    observed_cookie_names = list(
+        handoff.get("observed_cookie_names")
+        or surface_details.get("observed_cookie_names")
+        or []
+    )
+    auth_signals = list(
+        handoff.get("auth_signals")
+        or surface_details.get("auth_signals")
+        or []
+    )
+    observed_auth_names = _dedupe_text(
+        auth_signals + observed_header_names + observed_cookie_names
+    )[:8]
+
+    auth_material_types = _auth_material_types(target_headers, target_cookies)
+    auth_material_provided = bool(auth_material_types)
+    session_required = bool(
+        handoff.get("session_required", surface_details.get("session_required", False))
+    )
+    browser_session_likely = bool(
+        handoff.get("browser_session_likely", surface_details.get("browser_session_likely", False))
+    )
+    auth_friction_present = bool(
+        session_required or browser_session_likely or observed_auth_names
+    )
+
+    best_candidate_score = int(surface_details.get("best_candidate_score", handoff.get("score", 0)) or 0)
+    surface_label = str(surface_details.get("surface_label", "") or "").strip().lower()
+    status = "generic_surface"
+    if surface_label == "discovery_error":
+        status = "transport_or_discovery_error"
+    elif best_candidate_score >= 8 and auth_friction_present:
+        status = "useful_surface_with_auth_friction"
+    elif best_candidate_score >= 8:
+        status = "useful_surface"
+    elif surface_label in {"frontend_only", "non_html_root"}:
+        status = "weak_or_indirect_surface"
+
+    auth_friction_rationale = ""
+    if status == "transport_or_discovery_error":
+        auth_friction_rationale = "Surface discovery hit a transport or discovery failure; do not treat this as an auth-gated negative result."
+    elif auth_friction_present:
+        auth_friction_rationale = (
+            "Useful surface detected, but interaction likely requires session/auth context."
+            if best_candidate_score >= 8
+            else "Session/auth context may be required before surface coverage is representative."
+        )
+
+    suggested_material = []
+    if observed_cookie_names or "cookie" in observed_auth_names or session_required:
+        suggested_material.append("session cookies")
+    if any("authorization" in name.lower() for name in observed_header_names + observed_auth_names):
+        suggested_material.append("Authorization header")
+    csrf_names = [
+        name for name in observed_header_names + observed_auth_names
+        if "csrf" in name.lower() or "xsrf" in name.lower()
+    ]
+    if csrf_names:
+        suggested_material.append("CSRF/app-specific headers")
+    if not suggested_material and auth_friction_present:
+        suggested_material = ["session cookies", "Authorization header"]
+
+    operational_limitations = []
+    if auth_friction_present and not auth_material_provided:
+        operational_limitations.append(
+            "results may underrepresent reachable attack surface without valid session/auth context"
+        )
+    elif auth_friction_present and auth_material_provided:
+        operational_limitations.append(
+            "manual auth context is being applied, but coverage still depends on token/session validity"
+        )
+
+    manual_auth_rationale = ""
+    if auth_material_provided:
+        manual_auth_rationale = (
+            "Manual auth context provided via " + ", ".join(auth_material_types) + "."
+        )
+
+    return {
+        "auth_friction_present": auth_friction_present,
+        "auth_friction_rationale": auth_friction_rationale,
+        "auth_material_provided": auth_material_provided,
+        "auth_material_types": auth_material_types,
+        "manual_auth_rationale": manual_auth_rationale,
+        "observed_auth_signal_names": observed_auth_names,
+        "suggested_auth_material": _dedupe_text(suggested_material),
+        "operational_limitations": _dedupe_text(operational_limitations),
+        "coverage_constraints": _dedupe_text(operational_limitations),
+        "status": status,
+    }
+
+
+def _load_scan_payload(scan_path: str) -> dict:
+    try:
+        with open(scan_path, "r") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        console.print(f"[red]Scan file '{scan_path}' not found.[/red]")
+        raise typer.Exit(code=1)
+    except Exception as exc:
+        console.print(f"[red]Could not read scan file '{scan_path}': {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    if not isinstance(payload, dict):
+        console.print(f"[red]Scan file '{scan_path}' does not contain a valid JSON object.[/red]")
+        raise typer.Exit(code=1)
+
+    return payload
+
+
+def _resolve_attack_handoff(scan_path: Optional[str]) -> dict | None:
+    if not scan_path:
+        return None
+
+    payload = _load_scan_payload(scan_path)
+    handoff = payload.get("handoff", {})
+    if isinstance(handoff, dict) and handoff.get("recommended_target_url"):
+        return handoff
+
+    details = (
+        payload.get("fingerprint", {})
+        .get("evidence", {})
+        .get("surface_discovery", {})
+        .get("details", {})
+    )
+    if isinstance(details, dict):
+        handoff = details.get("handoff", {})
+        if isinstance(handoff, dict) and handoff.get("recommended_target_url"):
+            return handoff
+
+    console.print(f"[red]Scan file '{scan_path}' does not contain a usable handoff.[/red]")
+    console.print("[dim]Run `fracture scan --output scan.json` on a target with a discovered endpoint first.[/dim]")
+    raise typer.Exit(code=1)
+
+
+def _print_attack_handoff_summary(
+    handoff: dict,
+    explicit_target: Optional[str],
+    target_headers: dict,
+    target_cookies: dict,
+):
+    if not isinstance(handoff, dict) or not handoff:
+        return
+
+    invocation_profile = handoff.get("invocation_profile", {}) if isinstance(handoff, dict) else {}
+    auth_context = _build_auth_context(
+        handoff=handoff,
+        target_headers=target_headers,
+        target_cookies=target_cookies,
+    )
+    invocation_summary = "none"
+    if isinstance(invocation_profile, dict) and invocation_profile:
+        invocation_summary = (
+            f"{invocation_profile.get('method_hint', 'unknown')} "
+            f"{invocation_profile.get('content_type_hint') or 'unknown'} "
+            f"body={','.join(invocation_profile.get('observed_body_keys', [])[:3]) or 'none'} "
+            f"query={','.join(invocation_profile.get('observed_query_param_names', [])[:3]) or 'none'} "
+            f"stream={'yes' if invocation_profile.get('streaming_likely') else 'no'} "
+            f"ws={'yes' if invocation_profile.get('websocket_likely') else 'no'}"
+        )
+
+    console.print(Panel(
+        f"[bold]Used Target:[/bold]    [cyan]{explicit_target or handoff.get('recommended_target_url', 'unknown')}[/cyan]\n"
+        f"[bold]Handoff URL:[/bold]  [dim]{handoff.get('recommended_target_url', 'unknown')}[/dim]\n"
+        f"[bold]Intent:[/bold]       [dim]{handoff.get('intent', 'unknown_surface')}[/dim]\n"
+        f"[bold]Score:[/bold]        [dim]{handoff.get('score', 0)}[/dim]\n"
+        f"[bold]Source Mode:[/bold]  [dim]{handoff.get('source_mode', 'unknown')}[/dim]\n"
+        f"[bold]Transport:[/bold]    [dim]{handoff.get('transport_hint', 'unknown')}[/dim]\n"
+        f"[bold]Method Hint:[/bold]  [dim]{handoff.get('method_hint', 'unknown')}[/dim]\n"
+        f"[bold]Invocation:[/bold]   [dim]{invocation_summary}[/dim]\n"
+        f"[bold]Session Req:[/bold]  [dim]{'yes' if handoff.get('session_required') else 'no'}[/dim]\n"
+        f"[bold]Auth Signals:[/bold] [dim]{', '.join(handoff.get('auth_signals', []) or []) or 'none'}[/dim]\n"
+        f"[bold]Observed Auth:[/bold] [dim]{', '.join(auth_context.get('observed_auth_signal_names', [])[:5]) or 'none'}[/dim]\n"
+        f"[bold]Manual Auth:[/bold] [dim]{auth_context.get('manual_auth_rationale') or 'none provided'}[/dim]",
+        title="[bold yellow]Attack Handoff[/bold yellow]",
+        border_style="yellow",
+    ))
+
+    if explicit_target:
+        console.print("[yellow]Explicit --target provided; overriding handoff recommended_target_url.[/yellow]")
+
+    if auth_context.get("auth_friction_present") and auth_context.get("auth_material_provided"):
+        console.print(
+            "[yellow]Manual auth context will be applied during execution. "
+            f"Types: {', '.join(auth_context.get('auth_material_types', []))}.[/yellow]"
+        )
+
+    if auth_context.get("auth_friction_present") and not auth_context.get("auth_material_provided"):
+        console.print(
+            "[yellow]Useful surface detected, but session/auth friction is likely and no manual auth context was provided. "
+            f"Helpful material if available: {', '.join(auth_context.get('suggested_auth_material', [])[:3]) or 'session cookies, Authorization header'}. "
+            "Continuing without auth material; weak/negative results may underrepresent reachable surface.[/yellow]"
+        )
+
+    for limitation in auth_context.get("operational_limitations", [])[:2]:
+        console.print(f"[dim]Coverage limitation: {limitation}[/dim]")
+
+
+def _build_execution_hints(handoff: dict | None) -> dict | None:
+    if not isinstance(handoff, dict) or not handoff:
+        return None
+
+    invocation_profile = handoff.get("invocation_profile", {})
+    if not isinstance(invocation_profile, dict):
+        invocation_profile = {}
+
+    hints = {
+        "method_hint": invocation_profile.get("method_hint") or handoff.get("method_hint"),
+        "content_type_hint": invocation_profile.get("content_type_hint"),
+        "accepts_json": bool(invocation_profile.get("accepts_json")),
+        "observed_body_keys": list(invocation_profile.get("observed_body_keys", []) or []),
+        "observed_query_param_names": list(invocation_profile.get("observed_query_param_names", []) or []),
+        "session_required": bool(handoff.get("session_required")),
+        "auth_signals": list(handoff.get("auth_signals", []) or []),
+        "streaming_likely": bool(invocation_profile.get("streaming_likely")),
+        "websocket_likely": bool(invocation_profile.get("websocket_likely")),
+    }
+    normalized = {
+        key: value
+        for key, value in hints.items()
+        if value not in (None, False, [], "")
+    }
+    return normalized or None
+
+
+def _print_execution_hints_summary(execution_hints: dict | None):
+    if not isinstance(execution_hints, dict) or not execution_hints:
+        return
+
+    console.print(Panel(
+        f"[bold]Method:[/bold]      [dim]{execution_hints.get('method_hint', 'unknown')}[/dim]\n"
+        f"[bold]Content-Type:[/bold] [dim]{execution_hints.get('content_type_hint', 'unknown')}[/dim]\n"
+        f"[bold]Accepts JSON:[/bold] [dim]{'yes' if execution_hints.get('accepts_json') else 'no'}[/dim]\n"
+        f"[bold]Body Keys:[/bold]   [dim]{', '.join(execution_hints.get('observed_body_keys', [])[:4]) or 'none'}[/dim]\n"
+        f"[bold]Query Keys:[/bold]  [dim]{', '.join(execution_hints.get('observed_query_param_names', [])[:4]) or 'none'}[/dim]\n"
+        f"[bold]Session/Auth:[/bold] [dim]{'required' if execution_hints.get('session_required') else 'not indicated'}; "
+        f"{', '.join(execution_hints.get('auth_signals', [])[:3]) or 'none'}[/dim]\n"
+        f"[bold]Transport:[/bold]   [dim]stream={'yes' if execution_hints.get('streaming_likely') else 'no'} "
+        f"ws={'yes' if execution_hints.get('websocket_likely') else 'no'}[/dim]",
+        title="[bold yellow]Execution Hints[/bold yellow]",
+        border_style="yellow",
+    ))
+
+
+def _print_phantomtwin_runtime_guard(mode: str):
+    if str(mode or "passive").strip().lower() != "phantomtwin":
+        return
+
+    from fracture.core.surface_discovery import get_phantomtwin_runtime_status
+
+    status = get_phantomtwin_runtime_status()
+    if status.get("ready"):
+        return
+
+    console.print(Panel(
+        f"[bold yellow]PhantomTwin runtime guard[/bold yellow]\n"
+        f"[dim]{status.get('reason', '')}[/dim]\n"
+        f"[dim]{status.get('hint', '')}[/dim]",
+        border_style="yellow",
+    ))
+
+
+def _save_report_output(report, output_path: str, output_format: str):
+    report_format = str(output_format or "json").strip().lower()
+
+    if report_format == "docx":
+        from fracture.reporting.docx_export import export_report_docx
+
+        export_report_docx(report, output_path)
+        _print_output_saved("DOCX report", output_path)
+        return
+
+    if report_format == "pdf":
+        from fracture.reporting.pdf_export import export_report_pdf
+
+        export_report_pdf(report, output_path)
+        _print_output_saved("PDF report", output_path)
+        return
+
+    report.save(output_path)
+    _print_output_saved("JSON report", output_path)
 
 
 def _print_generic_result(result):
@@ -84,12 +458,267 @@ def _print_generic_result(result):
         console.print(table)
 
 
+def _print_scan_result(target, fingerprint, plan: dict, discovery_mode: str = "passive"):
+    attack_plan = plan.get("attack_plan", []) if isinstance(plan, dict) else []
+    attack_plan_str = ", ".join(attack_plan) if attack_plan else "none"
+    fingerprint_meta = {}
+    if getattr(fingerprint, "evidence", None) and isinstance(fingerprint.evidence, dict):
+        fingerprint_meta = fingerprint.evidence.get("_meta", {}) or {}
+    surface_details = {}
+    if getattr(fingerprint, "evidence", None) and isinstance(fingerprint.evidence, dict):
+        raw_surface = fingerprint.evidence.get("surface_discovery", {}) or {}
+        if isinstance(raw_surface, dict):
+            surface_details = raw_surface.get("details", {}) or {}
+
+    risk_level = str(plan.get("risk_level", "unknown")) if isinstance(plan, dict) else "unknown"
+    risk_color = "red" if risk_level in {"high", "critical"} else "yellow"
+    surface_label = surface_details.get("surface_label", "unknown")
+    browser_hint = "yes" if surface_details.get("likely_browser_session_required") else "no"
+    realtime_hint = "yes" if surface_details.get("likely_websocket_or_streaming_surface") else "no"
+    candidates = surface_details.get("api_candidates", []) if isinstance(surface_details, dict) else []
+    candidates_text = ", ".join(candidates[:3]) if candidates else "none"
+    best_candidate = surface_details.get("best_candidate", "none")
+    best_candidate_score = surface_details.get("best_candidate_score", 0)
+    best_candidate_reasons = surface_details.get("best_candidate_reasons", []) or []
+    best_candidate_reason_text = ", ".join(best_candidate_reasons[:3]) if best_candidate_reasons else "none"
+    best_candidate_intent = surface_details.get("best_candidate_intent", "unknown_surface")
+    best_candidate_breakdown = surface_details.get("best_candidate_score_breakdown", []) or []
+    browser_recon_note = surface_details.get("browser_recon_note", "")
+    handoff = surface_details.get("handoff", {}) if isinstance(surface_details, dict) else {}
+    auth_context = _build_auth_context(
+        handoff=handoff,
+        surface_details=surface_details,
+        target_headers=getattr(target, "headers", {}),
+        target_cookies=getattr(target, "cookies", {}),
+    )
+    handoff_method = handoff.get("method_hint", "unknown") if isinstance(handoff, dict) else "unknown"
+    handoff_session = "yes" if isinstance(handoff, dict) and handoff.get("session_required") else "no"
+    invocation_profile = surface_details.get("invocation_profile", {}) if isinstance(surface_details, dict) else {}
+    top_candidates = surface_details.get("top_candidates", []) if isinstance(surface_details, dict) else []
+    planning_rationale = plan.get("planning_rationale", []) if isinstance(plan, dict) else []
+    planning_signals = plan.get("planning_signals_used", []) if isinstance(plan, dict) else []
+    surface_constraints = plan.get("surface_constraints", []) if isinstance(plan, dict) else []
+    top_candidates_text = " | ".join(
+        f"{item.get('url')} ({item.get('score', 0)}, {item.get('intent', 'unknown_surface')})"
+        for item in top_candidates[:3]
+    ) if top_candidates else "none"
+    best_breakdown_text = ", ".join(
+        f"{item.get('reason')} ({item.get('delta', 0):+d})"
+        for item in best_candidate_breakdown[:4]
+    ) if best_candidate_breakdown else "none"
+    invocation_summary = "none"
+    if isinstance(invocation_profile, dict) and invocation_profile:
+        invocation_summary = (
+            f"{invocation_profile.get('method_hint', 'unknown')} "
+            f"{invocation_profile.get('content_type_hint') or 'unknown'} "
+            f"body={','.join(invocation_profile.get('observed_body_keys', [])[:3]) or 'none'} "
+            f"query={','.join(invocation_profile.get('observed_query_param_names', [])[:3]) or 'none'} "
+            f"stream={'yes' if invocation_profile.get('streaming_likely') else 'no'} "
+            f"ws={'yes' if invocation_profile.get('websocket_likely') else 'no'}"
+        )
+    planning_signals_text = ", ".join(planning_signals[:4]) if planning_signals else "none"
+    planning_rationale_text = " ; ".join(planning_rationale[:2]) if planning_rationale else str(plan.get("rationale", "") or "none")
+    surface_constraints_text = " ; ".join(surface_constraints[:2]) if surface_constraints else "none"
+    observed_auth_text = ", ".join(auth_context.get("observed_auth_signal_names", [])[:5]) or "none"
+    manual_auth_text = auth_context.get("manual_auth_rationale") or "none provided"
+    coverage_text = " ; ".join(auth_context.get("operational_limitations", [])[:2]) or "none"
+    auth_friction_text = auth_context.get("auth_friction_rationale") or "none"
+    surface_status = auth_context.get("status", "generic_surface")
+
+    console.print(Panel(
+        f"[bold]Target:[/bold]      [cyan]{getattr(target, 'url', 'unknown')}[/cyan]\n"
+        f"[bold]Model Hint:[/bold]  [cyan]{getattr(target, 'model', None) or 'auto'}[/cyan]\n"
+        f"[bold]Detected:[/bold]    [cyan]{plan.get('detected_model', 'unknown')}[/cyan]\n"
+        f"[bold]Risk:[/bold]        [{risk_color}]{risk_level}[/{risk_color}]\n"
+        f"[bold]Recon Mode:[/bold]  [cyan]{discovery_mode}[/cyan]\n"
+        f"[bold]Surfaces:[/bold]    [green]{attack_plan_str}[/green]\n"
+        f"[bold]Web Surface:[/bold] [cyan]{surface_label}[/cyan]\n"
+        f"[bold]Browser/Auth:[/bold] [dim]{browser_hint}[/dim]\n"
+        f"[bold]Realtime:[/bold]    [dim]{realtime_hint}[/dim]\n"
+        f"[bold]Best Endpoint:[/bold] [cyan]{best_candidate}[/cyan]\n"
+        f"[bold]Endpoint Score:[/bold] [dim]{best_candidate_score}[/dim]\n"
+        f"[bold]Endpoint Intent:[/bold] [dim]{best_candidate_intent}[/dim]\n"
+        f"[bold]Endpoint Why:[/bold] [dim]{best_candidate_reason_text}[/dim]\n"
+        f"[bold]Score Detail:[/bold] [dim]{best_breakdown_text}[/dim]\n"
+        f"[bold]Surface Status:[/bold] [dim]{surface_status}[/dim]\n"
+        f"[bold]Invocation:[/bold]  [dim]{invocation_summary}[/dim]\n"
+        f"[bold]Planning Signals:[/bold] [dim]{planning_signals_text}[/dim]\n"
+        f"[bold]Constraints:[/bold] [dim]{surface_constraints_text}[/dim]\n"
+        f"[bold]Session/Auth Constraint:[/bold] [dim]{auth_friction_text}[/dim]\n"
+        f"[bold]Observed Auth Signals:[/bold] [dim]{observed_auth_text}[/dim]\n"
+        f"[bold]Manual Auth Context:[/bold] [dim]{manual_auth_text}[/dim]\n"
+        f"[bold]Coverage Limitation:[/bold] [dim]{coverage_text}[/dim]\n"
+        f"[bold]Handoff Method:[/bold] [dim]{handoff_method}[/dim]\n"
+        f"[bold]Handoff Session:[/bold] [dim]{handoff_session}[/dim]\n"
+        f"[bold]Candidates:[/bold]  [dim]{candidates_text}[/dim]\n"
+        f"[bold]Top Candidates:[/bold] [dim]{top_candidates_text}[/dim]\n"
+        f"[bold]Browser Recon:[/bold] [dim]{browser_recon_note}[/dim]\n"
+        f"[bold]Probes Sent:[/bold] [dim]{fingerprint_meta.get('prompts_sent', 'unknown')}[/dim]\n"
+        f"[bold]Analysis:[/bold]    [dim]{plan.get('analysis', '')}[/dim]\n"
+        f"[bold]Why:[/bold]         [dim]{plan.get('rationale', '')}[/dim]\n"
+        f"[bold]Priority Why:[/bold] [dim]{planning_rationale_text}[/dim]",
+        title="[bold red]FRACTURE Scan Triage[/bold red]",
+        border_style="red",
+    ))
+
+    evidence = getattr(fingerprint, "evidence", {}) or {}
+    table = Table(
+        title="[bold red]Fingerprint Signals[/bold red]",
+        show_lines=True,
+        border_style="red",
+        header_style="bold white on red",
+    )
+    table.add_column("Probe", style="cyan", max_width=24)
+    table.add_column("Signal", style="white", max_width=100)
+
+    for key, value in evidence.items():
+        if key == "_meta":
+            continue
+        response = value.get("response", "") if isinstance(value, dict) else str(value)
+        response = str(response).strip()
+        if len(response) > 160:
+            response = response[:160] + "..."
+        table.add_row(str(key), response or "no response")
+
+    console.print(table)
+
+
+def _serialize_attack_result(result) -> dict:
+    return {
+        "module": getattr(result, "module", "unknown"),
+        "target_url": getattr(result, "target_url", "unknown"),
+        "success": getattr(result, "success", False),
+        "confidence": getattr(result, "confidence", 0.0),
+        "notes": getattr(result, "notes", ""),
+        "timestamp": getattr(result, "timestamp", ""),
+        "evidence": getattr(result, "evidence", {}),
+    }
+
+
+def _print_attack_summary(target, modules: list[str], results: dict):
+    total = len(results)
+    succeeded = sum(1 for result in results.values() if getattr(result, "success", False))
+    avg_confidence = (
+        sum(float(getattr(result, "confidence", 0.0) or 0.0) for result in results.values()) / total
+        if total else 0.0
+    )
+    avg_color = "green" if avg_confidence > 0.5 else "yellow" if avg_confidence > 0.2 else "red"
+
+    console.print(Panel(
+        f"[bold]Target:[/bold]    [cyan]{getattr(target, 'url', 'unknown')}[/cyan]\n"
+        f"[bold]Modules:[/bold]   [red]{', '.join(modules)}[/red]\n"
+        f"[bold]Model:[/bold]     [dim]{getattr(target, 'model', None) or 'auto'}[/dim]\n"
+        f"[bold]Timeout:[/bold]   [dim]{getattr(target, 'timeout', 'unknown')}s[/dim]\n"
+        f"[bold]Succeeded:[/bold] {succeeded}/{total}\n"
+        f"[bold]Avg ASR:[/bold]   [{avg_color}]{avg_confidence:.0%}[/{avg_color}]",
+        title="[bold red]Attack Summary[/bold red]",
+        border_style="red",
+    ))
+
+
+def _summarize_attack_findings(results: dict) -> list[str]:
+    findings = []
+    for module_name, result in results.items():
+        evidence = getattr(result, "evidence", {}) or {}
+        meta = evidence.get("_meta", {}) if isinstance(evidence, dict) else {}
+        assessment = (
+            meta.get("memory_assessment")
+            or meta.get("extract_assessment")
+            or meta.get("best_classification")
+            or ("success" if getattr(result, "success", False) else "negative")
+        )
+        findings.append(f"{module_name}: {assessment}")
+    return findings[:3]
+
+
+def _print_scan_operator_cue(plan: dict, surface_details: dict, auth_context: dict):
+    best_candidate = surface_details.get("best_candidate")
+    best_intent = surface_details.get("best_candidate_intent", "unknown_surface")
+    modules = ", ".join((plan.get("attack_plan", []) or [])[:4]) or "none"
+    lines = []
+    if best_candidate:
+        lines.append(f"Best endpoint: {best_candidate} ({best_intent})")
+    lines.append(f"Prioritized modules: {modules}")
+    if auth_context.get("status") == "transport_or_discovery_error":
+        lines.append("Next step: treat this as discovery failure, not as a clean negative surface.")
+    elif auth_context.get("auth_friction_present") and not auth_context.get("auth_material_provided"):
+        lines.append("Next step: rerun attack/report with relevant --header/--cookie material if a valid session exists.")
+    elif auth_context.get("auth_material_provided"):
+        lines.append("Next step: use --from-scan so attack can reuse the discovered handoff with your manual auth context.")
+    else:
+        lines.append("Next step: use fracture attack --from-scan to keep the discovered handoff and execution hints.")
+    _print_operator_cue("Operator Cue", lines)
+
+
+def _print_attack_operator_cue(results: dict, auth_context: dict):
+    findings = "; ".join(_summarize_attack_findings(results)) or "none"
+    lines = [f"Key signals: {findings}"]
+    if auth_context.get("auth_friction_present") and not auth_context.get("auth_material_provided"):
+        lines.append("Coverage may be limited by session/auth friction; prudent negatives may still be partial coverage.")
+    elif auth_context.get("auth_material_provided"):
+        lines.append("Manual auth context was applied; keep session validity in mind when interpreting weak results.")
+    lines.append("Next step: use fracture report when you need a consolidated rationale and exportable artifact.")
+    _print_operator_cue("Operator Cue", lines)
+
+
+def _print_report_operator_cue(report_obj, output: Optional[str], report_format: str):
+    if report_obj is None:
+        return
+    findings = getattr(report_obj, "findings_summary", {}) or {}
+    executive = "; ".join((findings.get("executive_summary", []) or [])[:2]) or "none"
+    top_signals = ", ".join((findings.get("top_signals", []) or [])[:4]) or "none"
+    limitations = "; ".join((findings.get("operational_limitations", []) or [])[:2]) or "none"
+    lines = [
+        f"Executive summary: {executive}",
+        f"Top signals: {top_signals}",
+        f"Operational limitations: {limitations}",
+    ]
+    if output:
+        lines.append(f"Exported {report_format} artifact: {output}")
+    _print_operator_cue("Report Cue", lines)
+
+
+def _print_autopilot_operator_cue(results: dict, output: Optional[str]):
+    if not isinstance(results, dict):
+        return
+    plan = results.get("plan", {}) or {}
+    report_obj = results.get("report")
+    findings = getattr(report_obj, "findings_summary", {}) if report_obj is not None else {}
+    lines = [
+        f"Plan executed: {', '.join(plan.get('attack_plan', [])[:5]) or 'none'}",
+        f"Constraints: {'; '.join(plan.get('surface_constraints', [])[:2]) or 'none'}",
+        f"Findings: confirmed={findings.get('confirmed', 0)} probable={findings.get('probable', 0)} possible={findings.get('possible', 0)} negative={findings.get('negative', 0)}",
+    ]
+    if output:
+        lines.append(f"Output path: {output}")
+    _print_operator_cue("Autopilot Cue", lines)
+
+
 async def _run_auto(target, output: Optional[str] = None, planner: str = "local"):
     from fracture.core.orchestrator import Orchestrator
 
     orch = Orchestrator(target, console=console, planner=planner)
     results = await orch.run(output_path=output)
     return results
+
+
+async def _run_scan(target, planner: str = "local", discovery_mode: str = "passive"):
+    from fracture.core.orchestrator import Orchestrator
+
+    orch = Orchestrator(target, console=console, planner=planner)
+    return await orch.scan(discovery_mode=discovery_mode)
+
+
+async def _run_attack(
+    target,
+    modules: list[str],
+    objective: Optional[str] = None,
+    execution_hints: Optional[dict] = None,
+):
+    from fracture.core.orchestrator import Orchestrator
+
+    orch = Orchestrator(target, console=console)
+    return await orch.attack(modules, objective=objective, execution_hints=execution_hints)
 
 
 @app.command()
@@ -99,7 +728,7 @@ def start(
         "fingerprint",
         "--module",
         "-m",
-        help="Module: fingerprint, hpm, memory, privesc, extract, auto",
+        help="Legacy single-module mode: fingerprint, hpm, memory, privesc, extract, auto",
     ),
     objective: Optional[str] = typer.Option(
         None,
@@ -117,23 +746,51 @@ def start(
         "--planner",
         help="Planner mode for autonomous flow: local or claude",
     ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        help="Optional model hint for target adapters and module heuristics",
+    ),
+    header: Optional[list[str]] = typer.Option(
+        None,
+        "--header",
+        help="HTTP header in KEY=VALUE format; repeatable",
+    ),
+    cookie: Optional[list[str]] = typer.Option(
+        None,
+        "--cookie",
+        help="HTTP cookie in KEY=VALUE format; repeatable",
+    ),
+    timeout: int = typer.Option(
+        30,
+        "--timeout",
+        help="HTTP timeout in seconds for target requests",
+    ),
 ):
-    """Start a red team engagement against a target AI system."""
+    """Legacy compatibility command for single-module or auto engagements."""
     console.print(BANNER)
     console.print(Panel(
         f"[bold]Target:[/bold]    [cyan]{target}[/cyan]\n"
         f"[bold]Module:[/bold]    [red]{module}[/red]\n"
         f"[bold]Planner:[/bold]   [yellow]{planner}[/yellow]\n"
-        f"[bold]Objective:[/bold] [dim]{objective or 'default'}[/dim]",
+        f"[bold]Objective:[/bold] [dim]{objective or 'default'}[/dim]\n"
+        f"[bold]Model:[/bold]     [dim]{model or 'auto'}[/dim]\n"
+        f"[bold]Timeout:[/bold]   [dim]{timeout}s[/dim]",
         title="[bold red]Engagement Config[/bold red]",
         border_style="red",
     ))
 
-    from fracture.core.target import AITarget
-    ai_target = AITarget(url=target)
+    ai_target = _build_target(
+        target_url=target,
+        model=model,
+        headers=header,
+        cookies=cookie,
+        timeout=timeout,
+    )
 
     if module == "auto":
-        asyncio.run(_run_auto(ai_target, output=output, planner=planner))
+        results = asyncio.run(_run_auto(ai_target, output=output, planner=planner))
+        _print_autopilot_operator_cue(results, output)
         return
 
     result = None
@@ -183,14 +840,363 @@ def autopilot(
         "--planner",
         help="Planner mode: local or claude",
     ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        help="Optional model hint for target adapters and module heuristics",
+    ),
+    header: Optional[list[str]] = typer.Option(
+        None,
+        "--header",
+        help="HTTP header in KEY=VALUE format; repeatable",
+    ),
+    cookie: Optional[list[str]] = typer.Option(
+        None,
+        "--cookie",
+        help="HTTP cookie in KEY=VALUE format; repeatable",
+    ),
+    timeout: int = typer.Option(
+        30,
+        "--timeout",
+        help="HTTP timeout in seconds for target requests",
+    ),
 ):
     """Run the full autonomous multi-agent workflow."""
     console.print(BANNER)
 
-    from fracture.core.target import AITarget
-    ai_target = AITarget(url=target)
+    ai_target = _build_target(
+        target_url=target,
+        model=model,
+        headers=header,
+        cookies=cookie,
+        timeout=timeout,
+    )
 
-    asyncio.run(_run_auto(ai_target, output=output, planner=planner))
+    results = asyncio.run(_run_auto(ai_target, output=output, planner=planner))
+    _print_autopilot_operator_cue(results, output)
+
+
+@app.command()
+def scan(
+    target: str = typer.Option(..., "--target", "-t", help="Target URL"),
+    output: Optional[str] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Save triage output to JSON",
+    ),
+    planner: str = typer.Option(
+        "local",
+        "--planner",
+        help="Planner mode: local or claude",
+    ),
+    mode: str = typer.Option(
+        "passive",
+        "--mode",
+        help="Recon mode: passive or phantomtwin",
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        help="Optional model hint for target adapters and module heuristics",
+    ),
+    header: Optional[list[str]] = typer.Option(
+        None,
+        "--header",
+        help="HTTP header in KEY=VALUE format; repeatable",
+    ),
+    cookie: Optional[list[str]] = typer.Option(
+        None,
+        "--cookie",
+        help="HTTP cookie in KEY=VALUE format; repeatable",
+    ),
+    timeout: int = typer.Option(
+        30,
+        "--timeout",
+        help="HTTP timeout in seconds for target requests",
+    ),
+):
+    """Fingerprint the target and return triage-ready attack surfaces."""
+    console.print(BANNER)
+
+    ai_target = _build_target(
+        target_url=target,
+        model=model,
+        headers=header,
+        cookies=cookie,
+        timeout=timeout,
+    )
+
+    _print_phantomtwin_runtime_guard(mode)
+
+    results = asyncio.run(_run_scan(ai_target, planner=planner, discovery_mode=mode))
+    fingerprint = results.get("fingerprint")
+    plan = results.get("plan", {})
+
+    _print_scan_result(ai_target, fingerprint, plan, discovery_mode=mode)
+    surface_details = (
+        getattr(fingerprint, "evidence", {}) or {}
+    ).get("surface_discovery", {}).get("details", {})
+    handoff = surface_details.get("handoff") if isinstance(surface_details, dict) else None
+    auth_context = _build_auth_context(
+        handoff=handoff,
+        surface_details=surface_details,
+        target_headers=ai_target.headers,
+        target_cookies=ai_target.cookies,
+    )
+    _print_scan_operator_cue(plan, surface_details, auth_context)
+
+    if output:
+        payload = {
+            "target_url": ai_target.url,
+            "model_hint": ai_target.model,
+            "header_names": _sanitize_scan_header_names(ai_target.headers),
+            "cookie_names": _sanitize_scan_cookie_names(ai_target.cookies),
+            "timeout": ai_target.timeout,
+            "fingerprint": {
+                "module": getattr(fingerprint, "module", "fingerprint"),
+                "success": getattr(fingerprint, "success", False),
+                "confidence": getattr(fingerprint, "confidence", 0.0),
+                "notes": getattr(fingerprint, "notes", ""),
+                "timestamp": getattr(fingerprint, "timestamp", ""),
+                "evidence": getattr(fingerprint, "evidence", {}),
+            },
+            "triage": {
+                "recon_mode": mode,
+                "detected_model": plan.get("detected_model", "unknown"),
+                "risk_level": plan.get("risk_level", "unknown"),
+                "analysis": plan.get("analysis", ""),
+                "rationale": plan.get("rationale", ""),
+                "planning_rationale": plan.get("planning_rationale", []),
+                "module_priority_reasons": plan.get("module_priority_reasons", {}),
+                "surface_constraints": plan.get("surface_constraints", []),
+                "planning_signals_used": plan.get("planning_signals_used", []),
+                "auth_friction_present": auth_context.get("auth_friction_present", False),
+                "auth_friction_rationale": auth_context.get("auth_friction_rationale", ""),
+                "auth_material_provided": auth_context.get("auth_material_provided", False),
+                "auth_material_types": auth_context.get("auth_material_types", []),
+                "operational_limitations": auth_context.get("operational_limitations", []),
+                "coverage_constraints": auth_context.get("coverage_constraints", []),
+                "observed_auth_signal_names": auth_context.get("observed_auth_signal_names", []),
+                "suggested_modules": plan.get("attack_plan", []),
+                "top_candidates": surface_details.get("top_candidates", []) if isinstance(surface_details, dict) else [],
+            },
+            "handoff": handoff,
+        }
+
+        with open(output, "w") as f:
+            json.dump(payload, f, indent=2)
+
+        _print_output_saved("Scan triage", output)
+
+
+@app.command()
+def attack(
+    target: Optional[str] = typer.Option(None, "--target", "-t", help="Target URL"),
+    from_scan: Optional[str] = typer.Option(
+        None,
+        "--from-scan",
+        help="Use structured handoff from a prior scan JSON export",
+    ),
+    module: list[str] = typer.Option(
+        ...,
+        "--module",
+        "-m",
+        help="Attack module to execute; repeatable",
+    ),
+    objective: Optional[str] = typer.Option(
+        None,
+        "--objective",
+        help="Optional HPM attack objective",
+    ),
+    output: Optional[str] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Save attack results to JSON",
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        help="Optional model hint for target adapters and module heuristics",
+    ),
+    header: Optional[list[str]] = typer.Option(
+        None,
+        "--header",
+        help="HTTP header in KEY=VALUE format; repeatable",
+    ),
+    cookie: Optional[list[str]] = typer.Option(
+        None,
+        "--cookie",
+        help="HTTP cookie in KEY=VALUE format; repeatable",
+    ),
+    timeout: int = typer.Option(
+        30,
+        "--timeout",
+        help="HTTP timeout in seconds for target requests",
+    ),
+):
+    """Execute one or more attack modules explicitly against a target."""
+    from fracture.agents.execution import MODULE_MAP
+
+    console.print(BANNER)
+    handoff = _resolve_attack_handoff(from_scan) if from_scan else None
+    resolved_target = target or (handoff.get("recommended_target_url") if isinstance(handoff, dict) else None)
+    if not resolved_target:
+        console.print("[red]Attack requires --target or --from-scan with a usable handoff.[/red]")
+        raise typer.Exit(code=1)
+
+    requested_modules: list[str] = []
+    for item in module:
+        normalized = str(item).strip().lower()
+        if not normalized:
+            continue
+        if normalized not in MODULE_MAP:
+            console.print(f"[red]Module '{normalized}' not available.[/red]")
+            console.print(f"[dim]Available: {', '.join(MODULE_MAP)}[/dim]")
+            raise typer.Exit(code=1)
+        if normalized not in requested_modules:
+            requested_modules.append(normalized)
+
+    ai_target = _build_target(
+        target_url=resolved_target,
+        model=model,
+        headers=header,
+        cookies=cookie,
+        timeout=timeout,
+    )
+
+    _print_attack_handoff_summary(
+        handoff=handoff or {},
+        explicit_target=target,
+        target_headers=ai_target.headers,
+        target_cookies=ai_target.cookies,
+    )
+    execution_hints = None if target else _build_execution_hints(handoff)
+    _print_execution_hints_summary(execution_hints)
+    attack_auth_context = _build_auth_context(
+        handoff=handoff or {},
+        target_headers=ai_target.headers,
+        target_cookies=ai_target.cookies,
+    )
+
+    results = asyncio.run(
+        _run_attack(
+            ai_target,
+            requested_modules,
+            objective=objective,
+            execution_hints=execution_hints,
+        )
+    )
+    attack_results = results.get("attacks", {})
+
+    _print_attack_summary(ai_target, requested_modules, attack_results)
+
+    for result in attack_results.values():
+        _print_generic_result(result)
+    _print_attack_operator_cue(attack_results, attack_auth_context)
+
+    if output:
+        payload = {
+            "target_url": ai_target.url,
+            "model_hint": ai_target.model,
+            "headers": ai_target.headers,
+            "cookies": ai_target.cookies,
+            "timeout": ai_target.timeout,
+            "handoff_used": handoff or None,
+            "execution_hints": execution_hints,
+            "auth_friction_present": attack_auth_context.get("auth_friction_present", False),
+            "auth_friction_rationale": attack_auth_context.get("auth_friction_rationale", ""),
+            "auth_material_provided": attack_auth_context.get("auth_material_provided", False),
+            "auth_material_types": attack_auth_context.get("auth_material_types", []),
+            "operational_limitations": attack_auth_context.get("operational_limitations", []),
+            "coverage_constraints": attack_auth_context.get("coverage_constraints", []),
+            "observed_auth_signal_names": attack_auth_context.get("observed_auth_signal_names", []),
+            "modules": requested_modules,
+            "results": {
+                name: _serialize_attack_result(result)
+                for name, result in attack_results.items()
+            },
+        }
+
+        with open(output, "w") as f:
+            json.dump(payload, f, indent=2)
+
+        _print_output_saved("Attack results", output)
+
+
+@app.command()
+def report(
+    target: str = typer.Option(..., "--target", "-t", help="Target URL"),
+    output: Optional[str] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Save consolidated report",
+    ),
+    format: str = typer.Option(
+        "json",
+        "--format",
+        help="Report export format: json, docx, or pdf",
+    ),
+    planner: str = typer.Option(
+        "local",
+        "--planner",
+        help="Planner mode: local or claude",
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        help="Optional model hint for target adapters and module heuristics",
+    ),
+    header: Optional[list[str]] = typer.Option(
+        None,
+        "--header",
+        help="HTTP header in KEY=VALUE format; repeatable",
+    ),
+    cookie: Optional[list[str]] = typer.Option(
+        None,
+        "--cookie",
+        help="HTTP cookie in KEY=VALUE format; repeatable",
+    ),
+    timeout: int = typer.Option(
+        30,
+        "--timeout",
+        help="HTTP timeout in seconds for target requests",
+    ),
+):
+    """Run autopilot and emit the consolidated final report."""
+    console.print(BANNER)
+
+    ai_target = _build_target(
+        target_url=target,
+        model=model,
+        headers=header,
+        cookies=cookie,
+        timeout=timeout,
+    )
+
+    report_format = str(format or "json").strip().lower()
+    if report_format not in {"json", "docx", "pdf"}:
+        console.print(f"[red]Unsupported report format '{report_format}'.[/red]")
+        console.print("[dim]Available formats: json, docx, pdf[/dim]")
+        raise typer.Exit(code=1)
+
+    if output:
+        suffix = Path(output).suffix.lower()
+        if suffix == ".docx":
+            report_format = "docx"
+        elif suffix == ".pdf":
+            report_format = "pdf"
+        elif suffix == ".json":
+            report_format = "json"
+
+    results = asyncio.run(_run_auto(ai_target, output=None, planner=planner))
+    report_obj = results.get("report") if isinstance(results, dict) else None
+
+    if output and report_obj is not None:
+        _save_report_output(report_obj, output, report_format)
+    _print_report_operator_cue(report_obj, output, report_format)
 
 
 if __name__ == "__main__":

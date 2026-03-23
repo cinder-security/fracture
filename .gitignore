@@ -1,0 +1,16 @@
+# Python cache / virtualenv
+__pycache__/
+*.py[cod]
+.venv/
+
+# FRACTURE runtime artifacts
+report.json
+scan.json
+attack.json
+fracture-report.json
+fracture-report.docx
+fracture-report.pdf
+
+# Generic exported reports
+*.docx
+*.pdf

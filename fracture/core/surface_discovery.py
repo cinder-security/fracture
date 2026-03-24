@@ -12,6 +12,9 @@ _PATH_CANDIDATE_RE = re.compile(
     r"""(?:"|')((?:/|\.?/)[^"'<> ]*(?:api|graphql|chat|conversation|message|messages|socket|stream|ws)[^"'<> ]*)(?:"|')""",
     re.IGNORECASE,
 )
+_LOGIN_FORM_RE = re.compile(r"""<form\b[^>]*>.*?</form>""", re.IGNORECASE | re.DOTALL)
+_PASSWORD_INPUT_RE = re.compile(r"""<input\b[^>]*type=["']?password["']?[^>]*>""", re.IGNORECASE)
+_LOGIN_ACTION_RE = re.compile(r"""(login|log in|sign in|signin|authenticate|password)""", re.IGNORECASE)
 
 _API_HINT_TERMS = [
     "/api/",
@@ -232,6 +235,66 @@ def _extract_browser_candidate_entries(browser_requests: list[dict], base_url: s
             }
         )
     return sorted(normalized_entries, key=lambda item: item["url"])[:12]
+
+
+def _detect_login_form(html: str) -> bool:
+    blob = str(html or "")
+    lowered = blob.lower()
+    if not blob.strip():
+        return False
+
+    if _PASSWORD_INPUT_RE.search(blob):
+        return True
+
+    for form_match in _LOGIN_FORM_RE.findall(blob):
+        if _LOGIN_ACTION_RE.search(form_match):
+            return True
+
+    return (
+        ("type=\"email\"" in lowered or "type='email'" in lowered or "username" in lowered or "signin" in lowered or "login" in lowered)
+        and "password" in lowered
+        and "<form" in lowered
+    )
+
+
+def _serialize_session_cookies(cookies: list[dict]) -> tuple[list[dict], str]:
+    serialized = []
+    header_parts = []
+
+    for item in cookies or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "") or "").strip()
+        if not name:
+            continue
+        value = str(item.get("value", "") or "")
+        serialized.append(
+            {
+                "name": name,
+                "value": value,
+                "domain": str(item.get("domain", "") or ""),
+                "path": str(item.get("path", "/") or "/"),
+            }
+        )
+        header_parts.append(f"{name}={value}")
+
+    return serialized, "; ".join(header_parts)
+
+
+def _cookie_signature(cookies: list[dict]) -> tuple[tuple[str, str, str, str], ...]:
+    signature = []
+    for item in cookies or []:
+        if not isinstance(item, dict):
+            continue
+        signature.append(
+            (
+                str(item.get("name", "") or ""),
+                str(item.get("value", "") or ""),
+                str(item.get("domain", "") or ""),
+                str(item.get("path", "") or ""),
+            )
+        )
+    return tuple(sorted(signature))
 
 
 def _extract_auth_metadata(
@@ -522,20 +585,30 @@ async def _run_phantomtwin_browser_recon(target) -> dict:
 
     requests = []
     rendered_html = ""
+    login_form_detected = False
+    session_cookies = []
+    session_cookie_header = ""
+    session_capture_note = ""
 
     try:
         async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=True)
-            context = await browser.new_context(extra_http_headers=getattr(target, "headers", {}) or {})
+            browser = None
+            context = None
+            page = None
+            note = "PhantomTwin browser recon observed frontend network activity."
 
-            if getattr(target, "cookies", None):
-                cookies = []
-                for key, value in (getattr(target, "cookies", {}) or {}).items():
-                    cookies.append({"name": key, "value": value, "url": target.url})
-                if cookies:
-                    await context.add_cookies(cookies)
+            async def _seed_context_cookies(current_context):
+                if getattr(target, "cookies", None):
+                    cookies = []
+                    for key, value in (getattr(target, "cookies", {}) or {}).items():
+                        cookies.append({"name": key, "value": value, "url": target.url})
+                    if cookies:
+                        await current_context.add_cookies(cookies)
 
-            page = await context.new_page()
+            async def _collect_session_state(current_context):
+                current_cookies = await current_context.cookies()
+                serialized, header = _serialize_session_cookies(current_cookies)
+                return current_cookies, serialized, header
 
             def _on_request(request):
                 header_names = []
@@ -584,6 +657,10 @@ async def _run_phantomtwin_browser_recon(target) -> dict:
                     }
                 )
 
+            browser = await playwright.chromium.launch(headless=True)
+            context = await browser.new_context(extra_http_headers=getattr(target, "headers", {}) or {})
+            await _seed_context_cookies(context)
+            page = await context.new_page()
             page.on("request", _on_request)
             page.on("websocket", _on_websocket)
 
@@ -609,6 +686,65 @@ async def _run_phantomtwin_browser_recon(target) -> dict:
             except Exception:
                 rendered_html = ""
 
+            login_form_detected = _detect_login_form(rendered_html)
+
+            if login_form_detected:
+                initial_url = page.url
+                initial_cookies, _, _ = await _collect_session_state(context)
+                initial_signature = _cookie_signature(initial_cookies)
+
+                await context.close()
+                await browser.close()
+
+                browser = await playwright.chromium.launch(headless=False)
+                context = await browser.new_context(extra_http_headers=getattr(target, "headers", {}) or {})
+                await _seed_context_cookies(context)
+                page = await context.new_page()
+                page.on("request", _on_request)
+                page.on("websocket", _on_websocket)
+
+                await page.goto(
+                    target.url,
+                    wait_until="domcontentloaded",
+                    timeout=int(getattr(target, "timeout", 30)) * 1000,
+                )
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=min(int(getattr(target, "timeout", 30)) * 1000, 5000))
+                except Exception:
+                    pass
+
+                print("Login detected. Please authenticate in the browser window. Waiting 60 seconds...")
+
+                for second in range(60):
+                    await page.wait_for_timeout(1000)
+                    current_cookies, serialized_cookies, header = await _collect_session_state(context)
+                    current_signature = _cookie_signature(current_cookies)
+                    current_url = page.url
+                    current_html = ""
+                    if second % 5 == 0:
+                        try:
+                            current_html = await page.content()
+                        except Exception:
+                            current_html = ""
+
+                    if current_signature != initial_signature and (
+                        current_url != initial_url
+                        or (current_html and not _detect_login_form(current_html))
+                    ):
+                        session_cookies = serialized_cookies
+                        session_cookie_header = header
+                        break
+
+                if not session_cookies:
+                    _, session_cookies, session_cookie_header = await _collect_session_state(context)
+
+                session_capture_note = (
+                    f"Session captured. {len(session_cookies)} cookies stored."
+                    if session_cookies
+                    else "Login window closed without capturing a new authenticated session."
+                )
+                note = "PhantomTwin observed a login form and attempted interactive session capture."
+
             await context.close()
             await browser.close()
 
@@ -617,6 +753,10 @@ async def _run_phantomtwin_browser_recon(target) -> dict:
             "requests": requests[:40],
             "note": note,
             "rendered_html": rendered_html,
+            "login_form_detected": login_form_detected,
+            "session_cookies": session_cookies,
+            "session_cookie_header": session_cookie_header,
+            "session_capture_note": session_capture_note,
         }
     except Exception as exc:
         return {
@@ -628,6 +768,10 @@ async def _run_phantomtwin_browser_recon(target) -> dict:
                 "`python -m playwright install chromium` in the active environment."
             ),
             "rendered_html": "",
+            "login_form_detected": False,
+            "session_cookies": [],
+            "session_cookie_header": "",
+            "session_capture_note": "",
         }
 
 
@@ -919,6 +1063,15 @@ async def discover_surface(target, mode: str = "passive") -> dict:
         target_cookies=getattr(target, "cookies", {}) or {},
         browser_requests=browser_recon.get("requests", [])[:12],
     )
+    if browser_recon.get("session_cookies"):
+        observed_cookie_names = set(auth_metadata.get("observed_cookie_names", []) or [])
+        observed_cookie_names.update(
+            str(item.get("name", "") or "").strip()
+            for item in (browser_recon.get("session_cookies", []) or [])
+            if isinstance(item, dict) and str(item.get("name", "") or "").strip()
+        )
+        auth_metadata["observed_cookie_names"] = sorted(observed_cookie_names)[:12]
+        auth_metadata["auth_signals"] = sorted(set(auth_metadata.get("auth_signals", []) + ["cookie"]))[:6]
     handoff = _build_handoff(
         best_candidate=best_candidate,
         discovery_mode=discovery_mode,
@@ -927,6 +1080,9 @@ async def discover_surface(target, mode: str = "passive") -> dict:
         auth_metadata=auth_metadata,
         invocation_profile=invocation_profile,
     )
+    if isinstance(handoff, dict):
+        handoff["session_cookies"] = list(browser_recon.get("session_cookies", []) or [])
+        handoff["session_cookie_header"] = str(browser_recon.get("session_cookie_header", "") or "")
 
     labels = ["api_candidates_found" if api_candidates_found else "frontend_only"]
     if likely_browser_session_required:
@@ -985,6 +1141,8 @@ async def discover_surface(target, mode: str = "passive") -> dict:
             "browser_recon_mode": discovery_mode,
             "browser_recon_ready": bool(browser_recon.get("available", False)),
             "browser_recon_note": str(browser_recon.get("note", "") or ""),
+            "login_form_detected": bool(browser_recon.get("login_form_detected", False)),
+            "session_capture_note": str(browser_recon.get("session_capture_note", "") or ""),
             "browser_requests": browser_recon.get("requests", [])[:12],
             "recommended_target_url": best_candidate_url or target.url,
             "handoff": handoff,

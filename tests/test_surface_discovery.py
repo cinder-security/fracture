@@ -198,6 +198,44 @@ class SurfaceDiscoveryTests(unittest.TestCase):
         self.assertNotIn("Bearer ", serialized)
         self.assertNotIn("hello", serialized)
 
+    def test_discover_surface_phantomtwin_persists_session_capture_handoff(self):
+        target = AITarget(url="https://example.test/")
+
+        with patch(
+            "fracture.core.surface_discovery.httpx.AsyncClient",
+            _DummyAsyncClient,
+        ), patch(
+            "fracture.core.surface_discovery._run_phantomtwin_browser_recon",
+            AsyncMock(
+                return_value={
+                    "available": True,
+                    "requests": [],
+                    "note": "PhantomTwin observed a login form and attempted interactive session capture.",
+                    "rendered_html": "<form><input type='password' /></form>",
+                    "login_form_detected": True,
+                    "session_cookies": [
+                        {
+                            "name": "sessionid",
+                            "value": "secret-cookie",
+                            "domain": "example.test",
+                            "path": "/",
+                        }
+                    ],
+                    "session_cookie_header": "sessionid=secret-cookie",
+                    "session_capture_note": "Session captured. 1 cookies stored.",
+                }
+            ),
+        ):
+            result = asyncio.run(discover_surface(target, mode="phantomtwin"))
+
+        handoff = result["details"]["handoff"]
+        self.assertTrue(result["details"]["login_form_detected"])
+        self.assertEqual(result["details"]["session_capture_note"], "Session captured. 1 cookies stored.")
+        self.assertEqual(handoff["session_cookie_header"], "sessionid=secret-cookie")
+        self.assertEqual(handoff["session_cookies"][0]["name"], "sessionid")
+        self.assertIn("sessionid", handoff["observed_cookie_names"])
+        self.assertNotIn("secret-cookie", str(result["details"]["invocation_profile"]))
+
     def test_candidate_scoring_deprioritizes_telemetry_and_health_noise(self):
         target = AITarget(url="https://example.test/")
 

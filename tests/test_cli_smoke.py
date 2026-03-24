@@ -521,6 +521,51 @@ class CLISmokeTests(unittest.TestCase):
         self.assertIn("Invocation:", result.output)
         self.assertIn("Execution Hints", result.output)
 
+    def test_attack_command_injects_session_cookies_from_scan_handoff(self):
+        captured = {}
+
+        async def fake_run_attack(target, modules, objective=None, execution_hints=None):
+            captured["target"] = target
+            return {"attacks": {}}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scan_path = Path(tmpdir) / "scan.json"
+            scan_path.write_text(json.dumps({
+                "handoff": {
+                    "recommended_target_url": "https://example.test/api/chat/messages",
+                    "intent": "chat_surface",
+                    "score": 12,
+                    "source_mode": "phantomtwin",
+                    "transport_hint": "http",
+                    "method_hint": "POST",
+                    "session_required": True,
+                    "browser_session_likely": True,
+                    "auth_signals": ["cookie"],
+                    "observed_header_names": [],
+                    "observed_cookie_names": ["sessionid"],
+                    "session_cookies": [
+                        {
+                            "name": "sessionid",
+                            "value": "captured-session",
+                            "domain": "example.test",
+                            "path": "/",
+                        }
+                    ],
+                    "session_cookie_header": "sessionid=captured-session",
+                    "notes": [],
+                }
+            }))
+            with patch("fracture.cli._run_attack", fake_run_attack):
+                result = self.runner.invoke(
+                    app,
+                    ["attack", "--from-scan", str(scan_path), "--module", "extract"],
+                )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(captured["target"].cookies, {"sessionid": "captured-session"})
+        self.assertEqual(captured["target"].session_cookies[0]["name"], "sessionid")
+        self.assertIn("Injected 1 session cookies from scan handoff", result.output)
+
     def test_attack_command_explicit_target_overrides_handoff(self):
         captured = {}
 

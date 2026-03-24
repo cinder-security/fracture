@@ -64,6 +64,7 @@ def _build_target(
     model: Optional[str] = None,
     headers: Optional[list[str]] = None,
     cookies: Optional[list[str]] = None,
+    session_cookies: Optional[list[dict]] = None,
     timeout: int = 30,
 ):
     from fracture.core.target import AITarget
@@ -73,6 +74,7 @@ def _build_target(
         model=model,
         headers=_parse_key_value_pairs(headers, "header"),
         cookies=_parse_key_value_pairs(cookies, "cookie"),
+        session_cookies=list(session_cookies or []),
         timeout=timeout,
     )
 
@@ -105,6 +107,32 @@ def _auth_material_types(headers: dict, cookies: dict) -> list[str]:
 
 def _print_output_saved(label: str, output_path: str):
     console.print(f"\n[dim]{label} saved to {output_path}[/dim]")
+
+
+def _extract_handoff_session_cookies(handoff: dict | None) -> list[dict]:
+    if not isinstance(handoff, dict):
+        return []
+
+    cookies = handoff.get("session_cookies", [])
+    if not isinstance(cookies, list):
+        return []
+
+    normalized = []
+    for item in cookies:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "") or "").strip()
+        if not name:
+            continue
+        normalized.append(
+            {
+                "name": name,
+                "value": str(item.get("value", "") or ""),
+                "domain": str(item.get("domain", "") or ""),
+                "path": str(item.get("path", "/") or "/"),
+            }
+        )
+    return normalized
 
 
 def _print_operator_cue(title: str, lines: list[str]):
@@ -524,6 +552,7 @@ def _print_scan_result(target, fingerprint, plan: dict, discovery_mode: str = "p
     coverage_text = " ; ".join(auth_context.get("operational_limitations", [])[:2]) or "none"
     auth_friction_text = auth_context.get("auth_friction_rationale") or "none"
     surface_status = auth_context.get("status", "generic_surface")
+    session_capture_note = surface_details.get("session_capture_note", "") if isinstance(surface_details, dict) else ""
 
     console.print(Panel(
         f"[bold]Target:[/bold]      [cyan]{getattr(target, 'url', 'unknown')}[/cyan]\n"
@@ -560,6 +589,11 @@ def _print_scan_result(target, fingerprint, plan: dict, discovery_mode: str = "p
         title="[bold red]FRACTURE Scan Triage[/bold red]",
         border_style="red",
     ))
+
+    if surface_details.get("login_form_detected"):
+        console.print("[yellow]Login form detected during PhantomTwin recon.[/yellow]")
+    if session_capture_note:
+        console.print(f"[yellow]{session_capture_note}[/yellow]")
 
     evidence = getattr(fingerprint, "evidence", {}) or {}
     table = Table(
@@ -1063,8 +1097,14 @@ def attack(
         model=model,
         headers=header,
         cookies=cookie,
+        session_cookies=_extract_handoff_session_cookies(handoff),
         timeout=timeout,
     )
+    auto_session_cookies = _extract_handoff_session_cookies(handoff)
+    if auto_session_cookies:
+        console.print(
+            f"[yellow]Injected {len(auto_session_cookies)} session cookies from scan handoff into the attack target.[/yellow]"
+        )
 
     _print_attack_handoff_summary(
         handoff=handoff or {},

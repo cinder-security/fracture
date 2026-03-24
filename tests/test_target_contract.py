@@ -80,6 +80,18 @@ class TargetContractModuleTests(unittest.TestCase):
         self.assertEqual(response, "ok")
         self._assert_contract()
 
+    def test_target_merges_handoff_session_cookies_without_breaking_cookie_contract(self):
+        target = AITarget(
+            url="https://example.test/api",
+            cookies={"manual": "override"},
+            session_cookies=[
+                {"name": "sessionid", "value": "captured", "domain": "example.test", "path": "/"},
+                {"name": "manual", "value": "stale", "domain": "example.test", "path": "/"},
+            ],
+        )
+
+        self.assertEqual(target.cookies, {"sessionid": "captured", "manual": "override"})
+
     def test_extract_probe_propagates_target_contract(self):
         with patch("fracture.modules.extract.engine.httpx.AsyncClient", _DummyAsyncClient):
             response = asyncio.run(ExtractEngine(self.target).probe("hello"))

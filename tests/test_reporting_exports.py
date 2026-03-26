@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from io import StringIO
@@ -164,6 +165,248 @@ class ReportAgentTests(unittest.TestCase):
         self.assertIn("quoted disclosure detected", extract["key_signals"])
         self.assertIn("extract_assessment=strong_instruction_disclosure", extract["assessment_basis"])
         self.assertEqual(refusal["assessment"], "negative")
+
+    def test_report_agent_builds_attack_graph_from_auth_and_module_signals(self):
+        target = AITarget(url="https://example.test")
+        agent = ReportAgent(target)
+
+        fingerprint = AttackResult(
+            module="fingerprint",
+            target_url=target.url,
+            success=True,
+            confidence=0.9,
+            evidence={
+                "surface_discovery": {
+                    "details": {
+                        "best_candidate": "https://example.test/api/chat/messages",
+                        "best_candidate_intent": "chat_surface",
+                        "best_candidate_score": 14,
+                        "auth_wall_type": "form_login",
+                        "auth_wall_confidence": 0.95,
+                        "manual_login_recommended": True,
+                        "session_capture_readiness": "high",
+                        "auth_opportunity_score": 9,
+                        "handoff": {
+                            "recommended_target_url": "https://example.test/api/chat/messages",
+                            "intent": "chat_surface",
+                            "score": 14,
+                            "source_mode": "phantomtwin",
+                            "method_hint": "POST",
+                            "auth_wall_type": "form_login",
+                            "auth_wall_confidence": 0.95,
+                            "manual_login_recommended": True,
+                            "session_capture_readiness": "high",
+                            "auth_opportunity_score": 9,
+                            "session_material_present": True,
+                            "session_cookie_count": 1,
+                            "session_cookie_names": ["sessionid"],
+                            "session_cookie_source": "handoff",
+                            "session_cookie_merge_strategy": "captured_only",
+                            "invocation_profile": {
+                                "method_hint": "POST",
+                                "observed_body_keys": ["message"],
+                            },
+                        },
+                    }
+                }
+            },
+        )
+        attack_results = {
+            "extract": AttackResult(
+                module="extract",
+                target_url=target.url,
+                success=True,
+                confidence=0.72,
+                evidence={"_meta": {"extract_assessment": "strong_instruction_disclosure", "quoted_disclosure_detected": True}},
+                notes="Extract evaluation complete",
+            ),
+            "memory": AttackResult(
+                module="memory",
+                target_url=target.url,
+                success=True,
+                confidence=0.44,
+                evidence={"_meta": {"memory_assessment": "canary_recall_signal", "canary_recall_detected": True}},
+                notes="Memory evaluation complete",
+            ),
+        }
+
+        report = asyncio.run(
+            agent.run(
+                fingerprint=fingerprint,
+                plan={
+                    "detected_model": "llm-agent",
+                    "risk_level": "high",
+                    "surface_constraints": ["session-required protected endpoint"],
+                    "operational_limitations": ["coverage depends on valid session context"],
+                },
+                attack_results=attack_results,
+            )
+        )
+
+        graph = report.attack_graph
+        node_ids = {node["id"] for node in graph["nodes"]}
+        node_kinds = {node["kind"] for node in graph["nodes"]}
+        edge_pairs = {
+            (edge["source"], edge["target"], edge["type"])
+            for edge in graph["edges"]
+        }
+        self.assertIn("auth_wall", node_ids)
+        self.assertIn("session_capture", node_ids)
+        self.assertIn("best_candidate_endpoint", node_ids)
+        self.assertIn("extract_signal", node_ids)
+        self.assertIn("memory_signal", node_ids)
+        self.assertIn("report_finding", node_ids)
+        self.assertEqual(
+            node_kinds,
+            {
+                "target_root",
+                "auth_wall",
+                "session_capture",
+                "best_candidate_endpoint",
+                "extract_signal",
+                "memory_signal",
+                "coverage_constraint",
+                "report_finding",
+            },
+        )
+        self.assertIn(("auth_wall", "target_root", "discovered_by"), edge_pairs)
+        self.assertIn(("best_candidate_endpoint", "target_root", "discovered_by"), edge_pairs)
+        self.assertIn(("best_candidate_endpoint", "auth_wall", "protected_by"), edge_pairs)
+        self.assertIn(("auth_wall", "session_capture", "unlocked_by"), edge_pairs)
+        self.assertIn(("best_candidate_endpoint", "session_capture", "unlocked_by"), edge_pairs)
+        self.assertIn(("extract_signal", "session_capture", "reused_by"), edge_pairs)
+        self.assertIn(("memory_signal", "session_capture", "reused_by"), edge_pairs)
+        self.assertIn(("best_candidate_endpoint", "coverage_constraint", "constrained_by"), edge_pairs)
+        self.assertIn(("report_finding", "extract_signal", "evidenced_by"), edge_pairs)
+        self.assertIn(("report_finding", "memory_signal", "evidenced_by"), edge_pairs)
+        self.assertIn(("best_candidate_endpoint", "report_finding", "summarized_by"), edge_pairs)
+        self.assertTrue(graph["summary"]["primary_path"])
+        self.assertTrue(graph["summary"]["blockers"])
+        self.assertIn("session", graph["summary"]["auth_or_session_dependency"])
+        self.assertNotIn("handoff", node_ids)
+
+    def test_report_agent_builds_adversarial_twin_from_auth_graph_and_signals(self):
+        target = AITarget(url="https://example.test")
+        agent = ReportAgent(target)
+
+        fingerprint = AttackResult(
+            module="fingerprint",
+            target_url=target.url,
+            success=True,
+            confidence=0.92,
+            evidence={
+                "surface_discovery": {
+                    "details": {
+                        "best_candidate": "https://example.test/api/chat/messages",
+                        "best_candidate_intent": "chat_surface",
+                        "best_candidate_score": 14,
+                        "auth_wall_type": "form_login",
+                        "auth_wall_confidence": 0.95,
+                        "manual_login_recommended": True,
+                        "session_capture_readiness": "high",
+                        "auth_opportunity_score": 9,
+                        "auth_wall_rationale": "Protected conversational surface is gated by a real login wall.",
+                        "top_candidates": [
+                            {
+                                "url": "https://example.test/api/chat/messages",
+                                "intent": "chat_surface",
+                                "score": 14,
+                                "reasons": ["frontend fetch", "post-login path"],
+                            }
+                        ],
+                        "handoff": {
+                            "recommended_target_url": "https://example.test/api/chat/messages",
+                            "intent": "chat_surface",
+                            "score": 14,
+                            "source_mode": "phantomtwin",
+                            "method_hint": "POST",
+                            "auth_wall_type": "form_login",
+                            "auth_wall_confidence": 0.95,
+                            "manual_login_recommended": True,
+                            "session_capture_readiness": "high",
+                            "auth_opportunity_score": 9,
+                            "auth_wall_rationale": "Protected conversational surface is gated by a real login wall.",
+                            "session_material_present": True,
+                            "session_cookie_count": 1,
+                            "session_cookie_names": ["sessionid"],
+                            "session_cookie_source": "handoff",
+                            "session_cookie_merge_strategy": "captured_only",
+                            "invocation_profile": {
+                                "method_hint": "POST",
+                                "content_type_hint": "application/json",
+                                "accepts_json": True,
+                                "streaming_likely": False,
+                                "websocket_likely": False,
+                                "observed_body_keys": ["message", "messages"],
+                                "observed_query_param_names": ["mode"],
+                            },
+                        },
+                    }
+                }
+            },
+        )
+        attack_results = {
+            "extract": AttackResult(
+                module="extract",
+                target_url=target.url,
+                success=True,
+                confidence=0.72,
+                evidence={
+                    "_meta": {
+                        "extract_assessment": "strong_instruction_disclosure",
+                        "quoted_disclosure_detected": True,
+                        "disclosure_signal_strength": "high",
+                        "disclosure_markers": ["system prompt"],
+                    }
+                },
+                notes="Extract evaluation complete",
+            ),
+            "memory": AttackResult(
+                module="memory",
+                target_url=target.url,
+                success=True,
+                confidence=0.44,
+                evidence={
+                    "_meta": {
+                        "memory_assessment": "canary_recall_signal",
+                        "canary_recall_detected": True,
+                        "recall_signal_strength": "moderate",
+                    }
+                },
+                notes="Memory evaluation complete",
+            ),
+        }
+
+        report = asyncio.run(
+            agent.run(
+                fingerprint=fingerprint,
+                plan={
+                    "detected_model": "llm-agent",
+                    "risk_level": "high",
+                    "surface_constraints": ["session-required protected endpoint"],
+                    "operational_limitations": ["coverage depends on valid session context"],
+                    "planning_signals_used": ["best_candidate_intent=chat_surface", "best_candidate_score=14"],
+                },
+                attack_results=attack_results,
+            )
+        )
+
+        twin = report.adversarial_twin
+        self.assertEqual(twin["identity"]["best_candidate"], "https://example.test/api/chat/messages")
+        self.assertEqual(twin["auth_profile"]["auth_wall_type"], "form_login")
+        self.assertEqual(twin["session_profile"]["session_cookie_names"], ["sessionid"])
+        self.assertNotIn("session_cookies", json.dumps(twin))
+        self.assertEqual(twin["invocation_profile"]["method_hint"], "POST")
+        self.assertEqual(twin["surface_model"]["primary_surface_type"], "chat_surface")
+        self.assertEqual(twin["offensive_signals"]["extract_assessment"], "strong_instruction_disclosure")
+        self.assertEqual(twin["offensive_signals"]["memory_assessment"], "canary_recall_signal")
+        self.assertTrue(twin["graph_linkage"]["primary_path"])
+        self.assertTrue(twin["graph_linkage"]["blockers"])
+        self.assertEqual(twin["summary"]["overall_posture"], "attackable")
+        self.assertEqual(twin["summary"]["attackability"], "high")
+        self.assertEqual(twin["summary"]["auth_dependency"], "medium")
+        self.assertEqual(twin["summary"]["recommended_next_step"], "attack_with_session")
+        self.assertIn("Protected conversational surface", twin["summary"]["twin_rationale"])
 
     def test_report_agent_preserves_canary_recall_as_non_negative_signal(self):
         target = AITarget(url="https://example.test")
@@ -566,6 +809,40 @@ class ExportTests(unittest.TestCase):
             self.assertIn(b"Assessment basis", data)
             self.assertIn(b"Rationale:", data)
             self.assertIn(b"automated heuristic signals", data)
+
+    def test_exports_redact_session_like_meta_values(self):
+        report = Report(
+            target_url="https://example.test",
+            results={
+                "extract": {
+                    "assessment": "possible",
+                    "module_assessment": "stateful_disclosure_signal",
+                    "confidence": 0.35,
+                    "report_rationale": "fixture",
+                    "key_signals": [],
+                    "assessment_basis": [],
+                    "notes": "fixture",
+                    "evidence_meta": {
+                        "session_cookie_header": "sessionid=fixture-session-123",
+                        "session_cookie_source": "handoff",
+                    },
+                }
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            docx_path = Path(tmpdir) / "report.docx"
+            pdf_path = Path(tmpdir) / "report.pdf"
+            export_report_docx(report, str(docx_path))
+            export_report_pdf(report, str(pdf_path))
+            with ZipFile(docx_path, "r") as archive:
+                document = archive.read("word/document.xml").decode("utf-8")
+            pdf_data = pdf_path.read_bytes()
+
+        self.assertNotIn("fixture-session-123", document)
+        self.assertIn("session_cookie_header=&lt;redacted&gt;", document)
+        self.assertNotIn(b"fixture-session-123", pdf_data)
+        self.assertIn(b"session_cookie_header=<redacted>", pdf_data)
 
 
 class OrchestratorTests(unittest.TestCase):

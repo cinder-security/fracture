@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 from fracture.agents.report import Report
 from fracture.cli import app
 from fracture.core.result import AttackResult
+from fracture.ui.control_center import get_demo_workspace_path, load_control_center_bundle
 
 
 class CLISmokeTests(unittest.TestCase):
@@ -120,6 +121,20 @@ class CLISmokeTests(unittest.TestCase):
                                 "best_candidate_reasons": ["observed in frontend fetch/xhr"],
                                 "best_candidate_intent": "chat_surface",
                                 "browser_recon_note": "PhantomTwin browser recon observed frontend network activity.",
+                                "login_form_detected": True,
+                                "session_capture_note": "Session captured. 1 cookies stored.",
+                                "auth_wall_detected": True,
+                                "auth_wall_type": "form_login",
+                                "auth_wall_confidence": 0.95,
+                                "auth_success_markers": ["protected high-value endpoint observed"],
+                                "already_authenticated_signals": [],
+                                "manual_login_recommended": True,
+                                "session_capture_readiness": "high",
+                                "post_login_surface_score": 8,
+                                "auth_opportunity_score": 9,
+                                "auth_opportunity_level": "high",
+                                "post_login_surface_label": "chat_surface",
+                                "auth_wall_rationale": "A real username/password login wall was detected. Best post-auth candidate looks like a chat_surface with score 14.",
                                 "best_candidate_score_breakdown": [
                                     {"reason": "observed in frontend fetch/xhr", "delta": 4},
                                     {"reason": "chat_surface intent inferred", "delta": 2},
@@ -157,6 +172,36 @@ class CLISmokeTests(unittest.TestCase):
                                     "auth_signals": ["cookie", "session"],
                                     "observed_header_names": ["Authorization"],
                                     "observed_cookie_names": ["session"],
+                                    "session_cookies": [
+                                        {
+                                            "name": "session",
+                                            "value": "captured-session",
+                                            "domain": "example.test",
+                                            "path": "/",
+                                        }
+                                    ],
+                                    "session_cookie_header": "session=<redacted>",
+                                    "session_material_present": True,
+                                    "session_cookie_count": 1,
+                                    "session_cookie_names": ["session"],
+                                    "session_cookie_domains": ["example.test"],
+                                    "session_cookie_source": "handoff",
+                                    "session_cookie_merge_strategy": "captured_only",
+                                    "session_cookie_header_redacted": True,
+                                    "session_scope_applied": False,
+                                    "session_propagation_note": "Captured browser session cookies are available for --from-scan reuse.",
+                                    "auth_wall_detected": True,
+                                    "auth_wall_type": "form_login",
+                                    "auth_wall_confidence": 0.95,
+                                    "auth_success_markers": ["protected high-value endpoint observed"],
+                                    "already_authenticated_signals": [],
+                                    "manual_login_recommended": True,
+                                    "session_capture_readiness": "high",
+                                    "post_login_surface_score": 8,
+                                    "auth_opportunity_score": 9,
+                                    "auth_opportunity_level": "high",
+                                    "post_login_surface_label": "chat_surface",
+                                    "auth_wall_rationale": "A real username/password login wall was detected. Best post-auth candidate looks like a chat_surface with score 14.",
                                     "invocation_profile": {
                                         "method_hint": "POST",
                                         "content_type_hint": "application/json",
@@ -238,6 +283,11 @@ class CLISmokeTests(unittest.TestCase):
             self.assertTrue(payload["triage"]["auth_friction_present"])
             self.assertTrue(payload["triage"]["auth_material_provided"])
             self.assertEqual(payload["triage"]["auth_material_types"], ["headers", "cookies"])
+            self.assertTrue(payload["triage"]["auth_wall_detected"])
+            self.assertEqual(payload["triage"]["auth_wall_type"], "form_login")
+            self.assertEqual(payload["triage"]["auth_opportunity_level"], "high")
+            self.assertTrue(payload["triage"]["manual_login_recommended"])
+            self.assertEqual(payload["triage"]["post_login_surface_label"], "chat_surface")
             self.assertIn("session", " ".join(payload["triage"]["observed_auth_signal_names"]).lower())
             self.assertTrue(payload["triage"]["operational_limitations"])
             self.assertEqual(payload["header_names"], ["X-Test"])
@@ -245,10 +295,20 @@ class CLISmokeTests(unittest.TestCase):
             self.assertEqual(payload["handoff"]["recommended_target_url"], "https://example.test/api/chat/messages")
             self.assertEqual(payload["handoff"]["observed_header_names"], ["Authorization"])
             self.assertEqual(payload["handoff"]["observed_cookie_names"], ["session"])
+            self.assertEqual(payload["handoff"]["session_cookie_header"], "session=<redacted>")
+            self.assertEqual(payload["handoff"]["session_cookies"][0]["name"], "session")
+            self.assertTrue(payload["triage"]["session_material_present"])
+            self.assertEqual(payload["triage"]["session_cookie_count"], 1)
+            self.assertEqual(payload["triage"]["session_cookie_names"], ["session"])
+            self.assertTrue(payload["triage"]["session_cookie_header_redacted"])
             self.assertEqual(payload["handoff"]["invocation_profile"]["method_hint"], "POST")
             self.assertEqual(payload["handoff"]["invocation_profile"]["observed_body_keys"], ["message", "messages"])
             self.assertEqual(payload["triage"]["top_candidates"][0]["url"], "https://example.test/api/chat/messages")
             self.assertIn("Top Candidates:", result.output)
+            self.assertIn("Login form detected during PhantomTwin recon", result.output)
+            self.assertIn("Session captured. 1 cookies stored.", result.output)
+            self.assertIn("Session cookie header is redacted", result.output)
+            self.assertNotIn("captured-session", result.output)
             self.assertIn("Score Detail:", result.output)
             self.assertIn("Invocation:", result.output)
             self.assertIn("Planning Signals:", result.output)
@@ -257,6 +317,11 @@ class CLISmokeTests(unittest.TestCase):
             self.assertIn("Session/Auth Constraint:", result.output)
             self.assertIn("Manual Auth Context:", result.output)
             self.assertIn("Coverage Limitation:", result.output)
+            self.assertIn("Auth Wall:", result.output)
+            self.assertIn("Opportunity:", result.output)
+            self.assertIn("Manual Login:", result.output)
+            self.assertIn("Post-Login Surface:", result.output)
+            self.assertIn("Auth Rationale:", result.output)
             self.assertIn("Operator Cue", result.output)
 
     def test_scan_command_distinguishes_discovery_error_from_auth_friction(self):
@@ -526,7 +591,28 @@ class CLISmokeTests(unittest.TestCase):
 
         async def fake_run_attack(target, modules, objective=None, execution_hints=None):
             captured["target"] = target
-            return {"attacks": {}}
+            return {
+                "attacks": {},
+                "attack_graph": {
+                    "nodes": [
+                        {"id": "target_root", "kind": "target_root", "label": target.url},
+                        {"id": "session_capture", "kind": "session_capture", "label": "session material"},
+                    ],
+                    "edges": [
+                        {"source": "session_capture", "target": "target_root", "type": "reused_by"},
+                    ],
+                    "summary": {
+                        "node_count": 2,
+                        "edge_count": 1,
+                        "primary_path": ["target_root", "session_capture"],
+                        "strongest_nodes": ["session_capture"],
+                        "strongest_edges": [{"source": "session_capture", "target": "target_root", "type": "reused_by"}],
+                        "blockers": [],
+                        "auth_or_session_dependency": "session capture reused for authenticated endpoint access",
+                        "key_findings": [],
+                    },
+                },
+            }
 
         with tempfile.TemporaryDirectory() as tmpdir:
             scan_path = Path(tmpdir) / "scan.json"
@@ -551,7 +637,14 @@ class CLISmokeTests(unittest.TestCase):
                             "path": "/",
                         }
                     ],
-                    "session_cookie_header": "sessionid=captured-session",
+                    "session_cookie_header": "sessionid=<redacted>",
+                    "session_material_present": True,
+                    "session_cookie_count": 1,
+                    "session_cookie_names": ["sessionid"],
+                    "session_cookie_domains": ["example.test"],
+                    "session_cookie_source": "handoff",
+                    "session_cookie_merge_strategy": "captured_only",
+                    "session_cookie_header_redacted": True,
                     "notes": [],
                 }
             }))
@@ -564,7 +657,83 @@ class CLISmokeTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertEqual(captured["target"].cookies, {"sessionid": "captured-session"})
         self.assertEqual(captured["target"].session_cookies[0]["name"], "sessionid")
-        self.assertIn("Injected 1 session cookies from scan handoff", result.output)
+        self.assertEqual(captured["target"].session_context["session_cookie_source"], "handoff")
+        self.assertEqual(captured["target"].session_context["session_cookie_merge_strategy"], "captured_only")
+        flattened_output = " ".join(result.output.split())
+        self.assertIn("Applied session context: source=handoff strategy=captured_only cookies=1 names=sessionid.", flattened_output)
+        self.assertIn("Attack Graph", result.output)
+        self.assertIn("Primary Path:", result.output)
+        self.assertNotIn("captured-session", result.output)
+
+    def test_attack_command_manual_cookies_override_captured_values_and_output_stays_redacted(self):
+        captured = {}
+
+        async def fake_run_attack(target, modules, objective=None, execution_hints=None):
+            captured["target"] = target
+            return {"attacks": {}}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scan_path = Path(tmpdir) / "scan.json"
+            output = Path(tmpdir) / "attack.json"
+            scan_path.write_text(json.dumps({
+                "handoff": {
+                    "recommended_target_url": "https://example.test/api/chat/messages",
+                    "intent": "chat_surface",
+                    "score": 12,
+                    "source_mode": "phantomtwin",
+                    "transport_hint": "http",
+                    "method_hint": "POST",
+                    "session_required": True,
+                    "browser_session_likely": True,
+                    "auth_signals": ["cookie"],
+                    "observed_header_names": [],
+                    "observed_cookie_names": ["sessionid"],
+                    "session_cookies": [
+                        {
+                            "name": "sessionid",
+                            "value": "captured-session",
+                            "domain": "example.test",
+                            "path": "/",
+                        }
+                    ],
+                    "session_cookie_header": "sessionid=<redacted>",
+                    "session_material_present": True,
+                    "session_cookie_count": 1,
+                    "session_cookie_names": ["sessionid"],
+                    "session_cookie_domains": ["example.test"],
+                    "session_cookie_source": "handoff",
+                    "session_cookie_merge_strategy": "captured_only",
+                    "session_cookie_header_redacted": True,
+                    "notes": [],
+                }
+            }))
+            with patch("fracture.cli._run_attack", fake_run_attack):
+                result = self.runner.invoke(
+                    app,
+                    [
+                        "attack",
+                        "--from-scan", str(scan_path),
+                        "--cookie", "sessionid=manual-override",
+                        "--cookie", "extra=manual-extra",
+                        "--module", "extract",
+                        "--output", str(output),
+                    ],
+                )
+            payload = json.loads(output.read_text())
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(captured["target"].cookies["sessionid"], "manual-override")
+        self.assertEqual(captured["target"].cookies["extra"], "manual-extra")
+        self.assertEqual(captured["target"].session_context["session_cookie_source"], "merged")
+        self.assertEqual(captured["target"].session_context["session_cookie_merge_strategy"], "manual_overrides_captured")
+        self.assertEqual(payload["cookies"]["sessionid"], "<redacted>")
+        self.assertEqual(payload["cookies"]["extra"], "<redacted>")
+        self.assertEqual(payload["session_context"]["session_cookie_source"], "merged")
+        self.assertEqual(payload["session_context"]["session_cookie_merge_strategy"], "manual_overrides_captured")
+        self.assertEqual(payload["handoff_used"]["session_cookie_header"], "sessionid=<redacted>")
+        self.assertEqual(payload["handoff_used"]["session_cookies"][0]["value"], "<redacted>")
+        self.assertNotIn("manual-override", result.output)
+        self.assertNotIn("captured-session", result.output)
 
     def test_attack_command_explicit_target_overrides_handoff(self):
         captured = {}
@@ -763,6 +932,22 @@ class CLISmokeTests(unittest.TestCase):
             self.assertTrue(payload["results"]["memory"]["evidence"]["_meta"]["continuity_token_reused"])
             self.assertEqual(payload["results"]["extract"]["evidence"]["_meta"]["extract_assessment"], "strong_instruction_disclosure")
             self.assertTrue(payload["results"]["extract"]["evidence"]["_meta"]["quoted_disclosure_detected"])
+            graph = payload["attack_graph"]
+            twin = payload["adversarial_twin"]
+            self.assertEqual(graph["summary"]["primary_path"][:3], ["target_root", "best_candidate_endpoint", "extract_signal"])
+            edge_pairs = {
+                (edge["source"], edge["target"], edge["type"])
+                for edge in graph["edges"]
+            }
+            self.assertIn(("best_candidate_endpoint", "target_root", "discovered_by"), edge_pairs)
+            self.assertIn(("best_candidate_endpoint", "target_root", "prioritized_by"), edge_pairs)
+            self.assertIn(("best_candidate_endpoint", "report_finding", "summarized_by"), edge_pairs)
+            self.assertIn(("report_finding", "extract_signal", "evidenced_by"), edge_pairs)
+            self.assertIn(("report_finding", "memory_signal", "evidenced_by"), edge_pairs)
+            self.assertEqual(twin["identity"]["best_candidate"], "https://example.test/api/chat/messages")
+            self.assertEqual(twin["invocation_profile"]["method_hint"], "POST")
+            self.assertEqual(twin["summary"]["recommended_next_step"], "collect_more_surface")
+            self.assertIn("Adversarial Twin", result.output)
 
     def test_attack_command_fails_cleanly_when_scan_has_no_usable_handoff(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -797,6 +982,14 @@ class CLISmokeTests(unittest.TestCase):
                         "extract": {"assessment": "confirmed", "confidence": 0.8, "notes": "ok"},
                         "ssrf": {"assessment": "possible", "confidence": 0.2, "notes": "ok"},
                     },
+                    adversarial_twin={
+                        "summary": {
+                            "overall_posture": "attackable",
+                            "attackability": "high",
+                            "auth_dependency": "low",
+                            "recommended_next_step": "attack_with_session",
+                        }
+                    },
                 )
             }
 
@@ -826,6 +1019,7 @@ class CLISmokeTests(unittest.TestCase):
             self.assertEqual(captured["target"].cookies, {"session": "abc123"})
             self.assertEqual(payload["target_url"], "https://example.test/api")
             self.assertEqual(payload["detected_model"], "llm-agent")
+            self.assertEqual(payload["adversarial_twin"]["summary"]["overall_posture"], "attackable")
             self.assertIn("Report Cue", result.output)
 
     def test_autopilot_command_smoke_surfaces_final_cue(self):
@@ -872,9 +1066,178 @@ class ReadmeSanityTests(unittest.TestCase):
         self.assertIn("fracture attack --from-scan", readme)
         self.assertIn("fracture report", readme)
         self.assertIn("fracture autopilot", readme)
+        self.assertIn("fracture ui", readme)
+        self.assertIn("Control Center", readme)
+        self.assertIn("read-only", readme)
         self.assertIn("Auth / Session Friction", readme)
         self.assertIn("--header", readme)
         self.assertIn("--cookie", readme)
         self.assertIn("handoff", readme)
         self.assertIn("invocation_profile", readme)
         self.assertIn("heuristic", readme.lower())
+
+
+class UICommandTests(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_ui_command_accepts_workspace(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "scan.json").write_text(json.dumps({
+                "target_url": "https://example.test",
+                "handoff": {
+                    "recommended_target_url": "https://example.test/api/chat",
+                    "intent": "chat_surface",
+                    "auth_wall_type": "form_login",
+                    "auth_wall_confidence": 0.92,
+                    "auth_opportunity_score": 9,
+                    "session_material_present": True,
+                    "session_cookie_count": 1,
+                    "session_cookie_names": ["sessionid"],
+                    "session_cookie_source": "handoff",
+                },
+            }))
+            (workspace / "attack.json").write_text(json.dumps({
+                "attack_graph": {
+                    "nodes": [{"id": "target_root", "kind": "target_root", "label": "https://example.test"}],
+                    "edges": [],
+                    "summary": {"primary_path": ["target_root"], "node_count": 1, "edge_count": 0},
+                }
+            }))
+            (workspace / "report.json").write_text(json.dumps({
+                "target_url": "https://example.test",
+                "findings_summary": {"executive_summary": ["Demo summary"], "top_signals": ["signal-a"]},
+                "adversarial_twin": {
+                    "summary": {
+                        "overall_posture": "attackable",
+                        "attackability": "high",
+                        "auth_dependency": "moderate",
+                        "recommended_next_step": "attack_with_session",
+                    }
+                },
+            }))
+
+            with patch("fracture.ui.control_center.serve_control_center") as mock_serve:
+                result = self.runner.invoke(app, ["ui", "--workspace", str(workspace)])
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("FRACTURE Control Center", result.output)
+        self.assertTrue(mock_serve.called)
+        bundle = mock_serve.call_args.args[0]
+        self.assertEqual(bundle["overview"]["target"], "https://example.test")
+        self.assertEqual(bundle["overview"]["best_candidate"], "https://example.test/api/chat")
+        self.assertEqual(bundle["executive"]["top_finding"], "Demo summary")
+
+    def test_ui_command_accepts_explicit_artifacts_and_degrades_cleanly(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scan_path = Path(tmpdir) / "custom-scan.json"
+            report_path = Path(tmpdir) / "custom-report.json"
+            scan_path.write_text(json.dumps({
+                "target_url": "https://example.test",
+                "triage": {
+                    "auth_wall_type": "oauth",
+                    "auth_wall_confidence": 0.8,
+                    "auth_opportunity_score": 7,
+                    "session_material_present": False,
+                },
+            }))
+            report_path.write_text(json.dumps({
+                "target_url": "https://example.test",
+                "findings_summary": {"confirmed": 0, "probable": 0, "possible": 0, "negative": 1},
+                "results": {},
+            }))
+
+            with patch("fracture.ui.control_center.serve_control_center") as mock_serve:
+                result = self.runner.invoke(
+                    app,
+                    ["ui", "--scan", str(scan_path), "--report", str(report_path)],
+                )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        bundle = mock_serve.call_args.args[0]
+        self.assertEqual(bundle["overview"]["auth_wall_type"], "oauth")
+        self.assertEqual(bundle["attack_graph"]["nodes"], [])
+        self.assertEqual(bundle["adversarial_twin"], {})
+        self.assertIn("No decisive top finding", bundle["executive"]["top_finding"])
+
+    def test_ui_command_accepts_demo_workspace_flag(self):
+        with patch("fracture.ui.control_center.serve_control_center") as mock_serve:
+            result = self.runner.invoke(app, ["ui", "--demo", "--presentation"])
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("golden workspace", result.output)
+        self.assertTrue(mock_serve.called)
+        self.assertTrue(mock_serve.call_args.kwargs["ready_callback"])
+        bundle = mock_serve.call_args.args[0]
+        self.assertTrue(bundle["demo_workspace"])
+        self.assertEqual(bundle["workspace"], str(get_demo_workspace_path().resolve()))
+
+    def test_ui_command_fails_cleanly_without_inputs(self):
+        result = self.runner.invoke(app, ["ui"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("UI requires --workspace or at least one of --scan/--attack/--report.", result.output)
+
+    def test_ui_bundle_sanitizes_sensitive_material(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "scan.json").write_text(json.dumps({
+                "target_url": "https://example.test",
+                "handoff": {
+                    "recommended_target_url": "https://example.test/api/chat",
+                    "session_cookies": [
+                        {"name": "sessionid", "value": "super-secret-cookie", "domain": "example.test", "path": "/"}
+                    ],
+                    "session_cookie_header": "sessionid=super-secret-cookie",
+                    "session_cookie_count": 1,
+                    "session_cookie_names": ["sessionid"],
+                    "session_cookie_source": "handoff",
+                },
+                "headers": {"Authorization": "Bearer secret-token", "X-Trace": "ok"},
+                "cookies": {"sessionid": "super-secret-cookie"},
+            }))
+            (workspace / "attack.json").write_text(json.dumps({
+                "headers": {"Authorization": "Bearer attack-secret"},
+                "cookies": {"sessionid": "attack-secret"},
+            }))
+
+            bundle = load_control_center_bundle(workspace=str(workspace))
+
+        scan_payload = bundle["artifacts_payload"]["scan"]
+        self.assertEqual(scan_payload["handoff"]["session_cookie_header"], "<redacted>")
+        self.assertEqual(scan_payload["handoff"]["session_cookies"][0]["value"], "<redacted>")
+        self.assertEqual(scan_payload["headers"]["Authorization"], "<redacted>")
+        self.assertEqual(scan_payload["headers"]["X-Trace"], "ok")
+        self.assertEqual(scan_payload["cookies"]["sessionid"], "<redacted>")
+        self.assertEqual(bundle["overview"]["session_context"]["session_cookie_names"], ["sessionid"])
+
+    def test_ui_bundle_builds_executive_summary_with_fallbacks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "report.json").write_text(json.dumps({
+                "target_url": "https://example.test",
+                "findings_summary": {
+                    "highlights": ["retrieval_poison confirmed with commercial impact"],
+                    "top_signals": ["retrieval influence", "primary path confidence"],
+                    "operational_limitations": ["manual validation still required"],
+                },
+                "attack_graph": {
+                    "summary": {"primary_path": ["target_root", "report_finding"]},
+                },
+                "adversarial_twin": {
+                    "summary": {
+                        "overall_posture": "attackable",
+                        "attackability": "medium",
+                        "auth_dependency": "none",
+                        "recommended_next_step": "collect_more_surface",
+                    }
+                },
+                "results": {},
+            }))
+
+            bundle = load_control_center_bundle(workspace=str(workspace))
+
+        self.assertEqual(bundle["executive"]["top_finding"], "retrieval_poison confirmed with commercial impact")
+        self.assertEqual(bundle["executive"]["recommended_next_step"], "collect_more_surface")
+        self.assertEqual(bundle["executive"]["primary_path"], ["target_root", "report_finding"])
+        self.assertEqual(bundle["executive"]["top_signals"][:2], ["retrieval influence", "primary path confidence"])

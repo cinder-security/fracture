@@ -135,6 +135,94 @@ def _extract_handoff_session_cookies(handoff: dict | None) -> list[dict]:
     return normalized
 
 
+def _build_session_context(target, handoff: dict | None = None) -> dict:
+    target_context = getattr(target, "session_context", {}) if target is not None else {}
+    if isinstance(target_context, dict) and target_context:
+        return dict(target_context)
+
+    handoff = handoff if isinstance(handoff, dict) else {}
+    return {
+        "session_material_present": bool(handoff.get("session_material_present")),
+        "session_cookie_count": int(handoff.get("session_cookie_count", 0) or 0),
+        "session_cookie_names": list(handoff.get("session_cookie_names", []) or []),
+        "session_cookie_domains": list(handoff.get("session_cookie_domains", []) or []),
+        "session_cookie_source": str(handoff.get("session_cookie_source", "none") or "none"),
+        "session_cookie_merge_strategy": str(handoff.get("session_cookie_merge_strategy", "no_session_material") or "no_session_material"),
+        "session_cookie_header_redacted": bool(handoff.get("session_cookie_header_redacted", False)),
+        "session_scope_applied": bool(handoff.get("session_scope_applied", False)),
+        "session_propagation_note": str(handoff.get("session_propagation_note", "") or ""),
+    }
+
+
+def _build_auth_wall_context(handoff: dict | None = None, surface_details: dict | None = None) -> dict:
+    handoff = handoff if isinstance(handoff, dict) else {}
+    surface_details = surface_details if isinstance(surface_details, dict) else {}
+
+    def pick(key: str, default=None):
+        if key in handoff:
+            return handoff.get(key)
+        return surface_details.get(key, default)
+
+    return {
+        "auth_wall_detected": bool(pick("auth_wall_detected", False)),
+        "auth_wall_type": str(pick("auth_wall_type", "no_auth_wall") or "no_auth_wall"),
+        "auth_wall_confidence": float(pick("auth_wall_confidence", 0.0) or 0.0),
+        "auth_success_markers": list(pick("auth_success_markers", []) or []),
+        "already_authenticated_signals": list(pick("already_authenticated_signals", []) or []),
+        "manual_login_recommended": bool(pick("manual_login_recommended", False)),
+        "session_capture_readiness": str(pick("session_capture_readiness", "low") or "low"),
+        "post_login_surface_score": int(pick("post_login_surface_score", 0) or 0),
+        "auth_opportunity_score": int(pick("auth_opportunity_score", 0) or 0),
+        "auth_opportunity_level": str(pick("auth_opportunity_level", "low") or "low"),
+        "post_login_surface_label": str(pick("post_login_surface_label", "unknown_surface") or "unknown_surface"),
+        "auth_wall_rationale": str(pick("auth_wall_rationale", "") or ""),
+    }
+
+
+def _sanitize_cookie_mapping_for_output(cookies: dict | None) -> dict:
+    sanitized = {}
+    for key in sorted((cookies or {}).keys()):
+        name = str(key or "").strip()
+        if name:
+            sanitized[name] = "<redacted>"
+    return sanitized
+
+
+def _sanitize_header_mapping_for_output(headers: dict | None) -> dict:
+    sanitized = {}
+    sensitive_tokens = ("authorization", "cookie", "token", "secret", "key", "csrf", "xsrf")
+    for key, value in (headers or {}).items():
+        name = str(key or "").strip()
+        if not name:
+            continue
+        if any(token in name.lower() for token in sensitive_tokens):
+            sanitized[name] = "<redacted>"
+        else:
+            sanitized[name] = value
+    return sanitized
+
+
+def _sanitize_handoff_for_output(handoff: dict | None) -> dict | None:
+    if not isinstance(handoff, dict) or not handoff:
+        return handoff
+
+    sanitized = dict(handoff)
+    if isinstance(sanitized.get("session_cookies"), list):
+        sanitized["session_cookies"] = [
+            {
+                "name": str(item.get("name", "") or "").strip(),
+                "value": "<redacted>",
+                "domain": str(item.get("domain", "") or ""),
+                "path": str(item.get("path", "/") or "/"),
+            }
+            for item in sanitized.get("session_cookies", [])
+            if isinstance(item, dict) and str(item.get("name", "") or "").strip()
+        ]
+    if "session_cookie_header" in sanitized:
+        sanitized["session_cookie_header"] = str(sanitized.get("session_cookie_header", "") or "")
+    return sanitized
+
+
 def _print_operator_cue(title: str, lines: list[str]):
     useful_lines = [str(line).strip() for line in lines if str(line or "").strip()]
     if not useful_lines:
@@ -303,6 +391,7 @@ def _print_attack_handoff_summary(
     explicit_target: Optional[str],
     target_headers: dict,
     target_cookies: dict,
+    session_context: dict | None = None,
 ):
     if not isinstance(handoff, dict) or not handoff:
         return
@@ -313,6 +402,8 @@ def _print_attack_handoff_summary(
         target_headers=target_headers,
         target_cookies=target_cookies,
     )
+    session_context = session_context if isinstance(session_context, dict) else {}
+    auth_wall_context = _build_auth_wall_context(handoff, None)
     invocation_summary = "none"
     if isinstance(invocation_profile, dict) and invocation_profile:
         invocation_summary = (
@@ -336,7 +427,15 @@ def _print_attack_handoff_summary(
         f"[bold]Session Req:[/bold]  [dim]{'yes' if handoff.get('session_required') else 'no'}[/dim]\n"
         f"[bold]Auth Signals:[/bold] [dim]{', '.join(handoff.get('auth_signals', []) or []) or 'none'}[/dim]\n"
         f"[bold]Observed Auth:[/bold] [dim]{', '.join(auth_context.get('observed_auth_signal_names', [])[:5]) or 'none'}[/dim]\n"
-        f"[bold]Manual Auth:[/bold] [dim]{auth_context.get('manual_auth_rationale') or 'none provided'}[/dim]",
+        f"[bold]Manual Auth:[/bold] [dim]{auth_context.get('manual_auth_rationale') or 'none provided'}[/dim]\n"
+        f"[bold]Auth Wall:[/bold] [dim]{auth_wall_context.get('auth_wall_type', 'no_auth_wall')} / "
+        f"{auth_wall_context.get('auth_opportunity_level', 'low')}[/dim]\n"
+        f"[bold]Session Material:[/bold] [dim]{'present' if session_context.get('session_material_present') else 'none'}[/dim]\n"
+        f"[bold]Session Cookies:[/bold] [dim]{session_context.get('session_cookie_count', 0)}; "
+        f"{', '.join(session_context.get('session_cookie_names', [])[:4]) or 'none'}[/dim]\n"
+        f"[bold]Session Domains:[/bold] [dim]{', '.join(session_context.get('session_cookie_domains', [])[:3]) or 'none'}[/dim]\n"
+        f"[bold]Session Source:[/bold] [dim]{session_context.get('session_cookie_source', 'none')} / "
+        f"{session_context.get('session_cookie_merge_strategy', 'unknown')}[/dim]",
         title="[bold yellow]Attack Handoff[/bold yellow]",
         border_style="yellow",
     ))
@@ -359,6 +458,10 @@ def _print_attack_handoff_summary(
 
     for limitation in auth_context.get("operational_limitations", [])[:2]:
         console.print(f"[dim]Coverage limitation: {limitation}[/dim]")
+    if session_context.get("session_cookie_header_redacted"):
+        console.print("[dim]Session cookie header is redacted in operator-facing output.[/dim]")
+    if session_context.get("session_propagation_note"):
+        console.print(f"[dim]{session_context.get('session_propagation_note')}[/dim]")
 
 
 def _build_execution_hints(handoff: dict | None) -> dict | None:
@@ -403,6 +506,38 @@ def _print_execution_hints_summary(execution_hints: dict | None):
         f"[bold]Transport:[/bold]   [dim]stream={'yes' if execution_hints.get('streaming_likely') else 'no'} "
         f"ws={'yes' if execution_hints.get('websocket_likely') else 'no'}[/dim]",
         title="[bold yellow]Execution Hints[/bold yellow]",
+        border_style="yellow",
+    ))    
+
+
+def _print_attack_graph_summary(attack_graph: dict | None):
+    if not isinstance(attack_graph, dict) or not attack_graph:
+        return
+    summary = attack_graph.get("summary", {}) if isinstance(attack_graph.get("summary", {}), dict) else {}
+    primary_path = " -> ".join(summary.get("primary_path", [])[:6]) or "none"
+    blockers = "; ".join(summary.get("blockers", [])[:2]) or "none"
+    dependency = summary.get("auth_or_session_dependency", "none") or "none"
+    console.print(Panel(
+        f"[bold]Attack Graph:[/bold] [dim]{summary.get('node_count', 0)} nodes / {summary.get('edge_count', 0)} edges[/dim]\n"
+        f"[bold]Primary Path:[/bold] [dim]{primary_path}[/dim]\n"
+        f"[bold]Blockers:[/bold] [dim]{blockers}[/dim]\n"
+        f"[bold]Dependency:[/bold] [dim]{dependency}[/dim]",
+        title="[bold yellow]Attack Graph[/bold yellow]",
+        border_style="yellow",
+    ))
+
+
+def _print_adversarial_twin_summary(adversarial_twin: dict | None):
+    if not isinstance(adversarial_twin, dict) or not adversarial_twin:
+        return
+    summary = adversarial_twin.get("summary", {}) if isinstance(adversarial_twin.get("summary", {}), dict) else {}
+    surface_model = adversarial_twin.get("surface_model", {}) if isinstance(adversarial_twin.get("surface_model", {}), dict) else {}
+    console.print(Panel(
+        f"[bold]Twin:[/bold] [dim]{summary.get('overall_posture', 'unknown')} / attackability={summary.get('attackability', 'unknown')} / auth={summary.get('auth_dependency', 'unknown')}[/dim]\n"
+        f"[bold]Surface:[/bold] [dim]{surface_model.get('primary_surface_type', 'unknown_surface')}[/dim]\n"
+        f"[bold]Next Step:[/bold] [dim]{summary.get('recommended_next_step', 'none')}[/dim]\n"
+        f"[bold]Rationale:[/bold] [dim]{summary.get('twin_rationale', 'none')}[/dim]",
+        title="[bold yellow]Adversarial Twin[/bold yellow]",
         border_style="yellow",
     ))
 
@@ -553,6 +688,9 @@ def _print_scan_result(target, fingerprint, plan: dict, discovery_mode: str = "p
     auth_friction_text = auth_context.get("auth_friction_rationale") or "none"
     surface_status = auth_context.get("status", "generic_surface")
     session_capture_note = surface_details.get("session_capture_note", "") if isinstance(surface_details, dict) else ""
+    session_context = _build_session_context(None, handoff if isinstance(handoff, dict) else {})
+    auth_wall_context = _build_auth_wall_context(handoff if isinstance(handoff, dict) else {}, surface_details)
+    auth_wall_confidence_pct = int(round(auth_wall_context.get("auth_wall_confidence", 0.0) * 100))
 
     console.print(Panel(
         f"[bold]Target:[/bold]      [cyan]{getattr(target, 'url', 'unknown')}[/cyan]\n"
@@ -577,6 +715,21 @@ def _print_scan_result(target, fingerprint, plan: dict, discovery_mode: str = "p
         f"[bold]Observed Auth Signals:[/bold] [dim]{observed_auth_text}[/dim]\n"
         f"[bold]Manual Auth Context:[/bold] [dim]{manual_auth_text}[/dim]\n"
         f"[bold]Coverage Limitation:[/bold] [dim]{coverage_text}[/dim]\n"
+        f"[bold]Auth Wall:[/bold]   [dim]{auth_wall_context.get('auth_wall_type', 'no_auth_wall')} "
+        f"({auth_wall_confidence_pct}% confidence)[/dim]\n"
+        f"[bold]Opportunity:[/bold] [dim]{auth_wall_context.get('auth_opportunity_level', 'low')} "
+        f"(score={auth_wall_context.get('auth_opportunity_score', 0)}/10)[/dim]\n"
+        f"[bold]Manual Login:[/bold] [dim]{'recommended' if auth_wall_context.get('manual_login_recommended') else 'not recommended'}[/dim]\n"
+        f"[bold]Capture Ready:[/bold] [dim]{auth_wall_context.get('session_capture_readiness', 'low')}[/dim]\n"
+        f"[bold]Post-Login Surface:[/bold] [dim]{auth_wall_context.get('post_login_surface_label', 'unknown_surface')} "
+        f"(score={auth_wall_context.get('post_login_surface_score', 0)}/10)[/dim]\n"
+        f"[bold]Auth Rationale:[/bold] [dim]{auth_wall_context.get('auth_wall_rationale', '') or 'none'}[/dim]\n"
+        f"[bold]Session Material:[/bold] [dim]{'present' if session_context.get('session_material_present') else 'none'}[/dim]\n"
+        f"[bold]Session Cookies:[/bold] [dim]{session_context.get('session_cookie_count', 0)}; "
+        f"{', '.join(session_context.get('session_cookie_names', [])[:4]) or 'none'}[/dim]\n"
+        f"[bold]Session Domains:[/bold] [dim]{', '.join(session_context.get('session_cookie_domains', [])[:3]) or 'none'}[/dim]\n"
+        f"[bold]Session Source:[/bold] [dim]{session_context.get('session_cookie_source', 'none')} / "
+        f"{session_context.get('session_cookie_merge_strategy', 'unknown')}[/dim]\n"
         f"[bold]Handoff Method:[/bold] [dim]{handoff_method}[/dim]\n"
         f"[bold]Handoff Session:[/bold] [dim]{handoff_session}[/dim]\n"
         f"[bold]Candidates:[/bold]  [dim]{candidates_text}[/dim]\n"
@@ -594,6 +747,8 @@ def _print_scan_result(target, fingerprint, plan: dict, discovery_mode: str = "p
         console.print("[yellow]Login form detected during PhantomTwin recon.[/yellow]")
     if session_capture_note:
         console.print(f"[yellow]{session_capture_note}[/yellow]")
+    if session_context.get("session_cookie_header_redacted"):
+        console.print("[dim]Session cookie header is redacted in operator-facing output.[/dim]")
 
     evidence = getattr(fingerprint, "evidence", {}) or {}
     table = Table(
@@ -668,13 +823,21 @@ def _summarize_attack_findings(results: dict) -> list[str]:
 def _print_scan_operator_cue(plan: dict, surface_details: dict, auth_context: dict):
     best_candidate = surface_details.get("best_candidate")
     best_intent = surface_details.get("best_candidate_intent", "unknown_surface")
+    auth_wall_context = _build_auth_wall_context(surface_details.get("handoff", {}), surface_details)
     modules = ", ".join((plan.get("attack_plan", []) or [])[:4]) or "none"
     lines = []
     if best_candidate:
         lines.append(f"Best endpoint: {best_candidate} ({best_intent})")
     lines.append(f"Prioritized modules: {modules}")
+    lines.append(
+        "Auth wall: "
+        f"{auth_wall_context.get('auth_wall_type', 'no_auth_wall')} / "
+        f"opportunity={auth_wall_context.get('auth_opportunity_level', 'low')}"
+    )
     if auth_context.get("status") == "transport_or_discovery_error":
         lines.append("Next step: treat this as discovery failure, not as a clean negative surface.")
+    elif auth_wall_context.get("manual_login_recommended"):
+        lines.append("Next step: manual login is worth the effort because the post-login surface looks actionable.")
     elif auth_context.get("auth_friction_present") and not auth_context.get("auth_material_provided"):
         lines.append("Next step: rerun attack/report with relevant --header/--cookie material if a valid session exists.")
     elif auth_context.get("auth_material_provided"):
@@ -978,6 +1141,8 @@ def scan(
         target_headers=ai_target.headers,
         target_cookies=ai_target.cookies,
     )
+    scan_session_context = _build_session_context(None, handoff if isinstance(handoff, dict) else {})
+    auth_wall_context = _build_auth_wall_context(handoff if isinstance(handoff, dict) else {}, surface_details)
     _print_scan_operator_cue(plan, surface_details, auth_context)
 
     if output:
@@ -1012,6 +1177,27 @@ def scan(
                 "operational_limitations": auth_context.get("operational_limitations", []),
                 "coverage_constraints": auth_context.get("coverage_constraints", []),
                 "observed_auth_signal_names": auth_context.get("observed_auth_signal_names", []),
+                "auth_wall_detected": auth_wall_context.get("auth_wall_detected", False),
+                "auth_wall_type": auth_wall_context.get("auth_wall_type", "no_auth_wall"),
+                "auth_wall_confidence": auth_wall_context.get("auth_wall_confidence", 0.0),
+                "auth_success_markers": auth_wall_context.get("auth_success_markers", []),
+                "already_authenticated_signals": auth_wall_context.get("already_authenticated_signals", []),
+                "manual_login_recommended": auth_wall_context.get("manual_login_recommended", False),
+                "session_capture_readiness": auth_wall_context.get("session_capture_readiness", "low"),
+                "post_login_surface_score": auth_wall_context.get("post_login_surface_score", 0),
+                "auth_opportunity_score": auth_wall_context.get("auth_opportunity_score", 0),
+                "auth_opportunity_level": auth_wall_context.get("auth_opportunity_level", "low"),
+                "post_login_surface_label": auth_wall_context.get("post_login_surface_label", "unknown_surface"),
+                "auth_wall_rationale": auth_wall_context.get("auth_wall_rationale", ""),
+                "session_material_present": scan_session_context.get("session_material_present", False),
+                "session_cookie_count": scan_session_context.get("session_cookie_count", 0),
+                "session_cookie_names": scan_session_context.get("session_cookie_names", []),
+                "session_cookie_domains": scan_session_context.get("session_cookie_domains", []),
+                "session_cookie_source": scan_session_context.get("session_cookie_source", "none"),
+                "session_cookie_merge_strategy": scan_session_context.get("session_cookie_merge_strategy", "unknown"),
+                "session_cookie_header_redacted": scan_session_context.get("session_cookie_header_redacted", False),
+                "session_scope_applied": scan_session_context.get("session_scope_applied", False),
+                "session_propagation_note": scan_session_context.get("session_propagation_note", ""),
                 "suggested_modules": plan.get("attack_plan", []),
                 "top_candidates": surface_details.get("top_candidates", []) if isinstance(surface_details, dict) else [],
             },
@@ -1100,10 +1286,15 @@ def attack(
         session_cookies=_extract_handoff_session_cookies(handoff),
         timeout=timeout,
     )
-    auto_session_cookies = _extract_handoff_session_cookies(handoff)
-    if auto_session_cookies:
+    session_context = _build_session_context(ai_target, handoff)
+    if session_context.get("session_material_present"):
         console.print(
-            f"[yellow]Injected {len(auto_session_cookies)} session cookies from scan handoff into the attack target.[/yellow]"
+            "[yellow]"
+            f"Applied session context: source={session_context.get('session_cookie_source', 'none')} "
+            f"strategy={session_context.get('session_cookie_merge_strategy', 'unknown')} "
+            f"cookies={session_context.get('session_cookie_count', 0)} "
+            f"names={', '.join(session_context.get('session_cookie_names', [])[:4]) or 'none'}."
+            "[/yellow]"
         )
 
     _print_attack_handoff_summary(
@@ -1111,6 +1302,7 @@ def attack(
         explicit_target=target,
         target_headers=ai_target.headers,
         target_cookies=ai_target.cookies,
+        session_context=session_context,
     )
     execution_hints = None if target else _build_execution_hints(handoff)
     _print_execution_hints_summary(execution_hints)
@@ -1129,21 +1321,42 @@ def attack(
         )
     )
     attack_results = results.get("attacks", {})
+    from fracture.agents.report import ReportAgent
+
+    attack_graph = ReportAgent(ai_target, console=console).build_attack_graph(
+        plan={},
+        attack_results=attack_results,
+        handoff=handoff or {},
+        session_context=session_context,
+        execution_hints=execution_hints,
+    )
+    adversarial_twin = ReportAgent(ai_target, console=console).build_adversarial_twin(
+        plan={},
+        attack_results=attack_results,
+        attack_graph=attack_graph,
+        handoff=handoff or {},
+        session_context=session_context,
+        execution_hints=execution_hints,
+    )
 
     _print_attack_summary(ai_target, requested_modules, attack_results)
 
     for result in attack_results.values():
         _print_generic_result(result)
+    _print_attack_graph_summary(attack_graph)
+    _print_adversarial_twin_summary(adversarial_twin)
     _print_attack_operator_cue(attack_results, attack_auth_context)
 
     if output:
         payload = {
             "target_url": ai_target.url,
             "model_hint": ai_target.model,
-            "headers": ai_target.headers,
-            "cookies": ai_target.cookies,
+            "headers": _sanitize_header_mapping_for_output(ai_target.headers),
+            "cookies": _sanitize_cookie_mapping_for_output(ai_target.cookies),
+            "cookie_names": sorted((ai_target.cookies or {}).keys()),
             "timeout": ai_target.timeout,
-            "handoff_used": handoff or None,
+            "handoff_used": _sanitize_handoff_for_output(handoff or None),
+            "session_context": session_context,
             "execution_hints": execution_hints,
             "auth_friction_present": attack_auth_context.get("auth_friction_present", False),
             "auth_friction_rationale": attack_auth_context.get("auth_friction_rationale", ""),
@@ -1157,6 +1370,8 @@ def attack(
                 name: _serialize_attack_result(result)
                 for name, result in attack_results.items()
             },
+            "attack_graph": attack_graph,
+            "adversarial_twin": adversarial_twin,
         }
 
         with open(output, "w") as f:
@@ -1237,6 +1452,102 @@ def report(
     if output and report_obj is not None:
         _save_report_output(report_obj, output, report_format)
     _print_report_operator_cue(report_obj, output, report_format)
+
+
+@app.command()
+def ui(
+    demo: bool = typer.Option(
+        False,
+        "--demo",
+        help="Load the repo's golden demo workspace",
+    ),
+    workspace: Optional[str] = typer.Option(
+        None,
+        "--workspace",
+        help="Workspace directory containing scan.json, attack.json or report.json artifacts",
+    ),
+    scan: Optional[str] = typer.Option(
+        None,
+        "--scan",
+        help="Path to a scan JSON artifact",
+    ),
+    attack: Optional[str] = typer.Option(
+        None,
+        "--attack",
+        help="Path to an attack JSON artifact",
+    ),
+    report: Optional[str] = typer.Option(
+        None,
+        "--report",
+        help="Path to a report JSON artifact",
+    ),
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        help="Host interface for the local read-only UI server",
+    ),
+    port: int = typer.Option(
+        8009,
+        "--port",
+        help="Port for the local read-only UI server; use 0 for an ephemeral port",
+    ),
+    max_requests: int = typer.Option(
+        0,
+        "--max-requests",
+        help="Serve at most N HTTP requests before exiting; 0 keeps the server running",
+    ),
+    presentation: bool = typer.Option(
+        False,
+        "--presentation",
+        help="Print the Control Center URL in presentation mode",
+    ),
+):
+    """Launch a read-only local Control Center UI over FRACTURE artifacts."""
+    from fracture.ui.control_center import get_demo_workspace_path, load_control_center_bundle, serve_control_center
+
+    console.print(BANNER)
+    if demo and any([workspace, scan, attack, report]):
+        console.print("[red]Use either --demo or explicit workspace/artifact inputs, not both.[/red]")
+        raise typer.Exit(code=1)
+
+    workspace_path = str(get_demo_workspace_path()) if demo else workspace
+    try:
+        bundle = load_control_center_bundle(
+            workspace=workspace_path,
+            scan_path=scan,
+            attack_path=attack,
+            report_path=report,
+        )
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    loaded = [
+        artifact["label"]
+        for artifact in bundle.get("artifacts", {}).values()
+        if artifact.get("available")
+    ]
+    console.print(Panel(
+        f"[bold]Workspace:[/bold] [dim]{bundle.get('workspace') or 'not provided'}[/dim]\n"
+        f"[bold]Artifacts:[/bold] [dim]{', '.join(loaded) or 'none'}[/dim]\n"
+        f"[bold]Target:[/bold] [cyan]{bundle.get('overview', {}).get('target', 'unknown')}[/cyan]\n"
+        f"[bold]Best Candidate:[/bold] [dim]{bundle.get('overview', {}).get('best_candidate', 'unknown')}[/dim]\n"
+        f"[bold]Demo Mode:[/bold] [dim]{'golden workspace' if bundle.get('demo_workspace') else 'custom workspace'}[/dim]\n"
+        f"[bold]Read-only:[/bold] [dim]sanitized operator view; cookies, sensitive headers and secrets stay redacted[/dim]",
+        title="[bold red]FRACTURE Control Center[/bold red]",
+        border_style="red",
+    ))
+
+    serve_control_center(
+        bundle,
+        host=host,
+        port=port,
+        max_requests=max_requests,
+        ready_callback=lambda url: console.print(
+            f"[green]Control Center URL:[/green] [bold]{url}{'?presentation=1&view=executive' if presentation else '?view=executive'}[/bold]\n"
+            "[dim]Artifacts are served read-only and sanitized. Press Ctrl+C to stop.[/dim]"
+        ),
+    )
 
 
 if __name__ == "__main__":

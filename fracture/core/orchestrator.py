@@ -59,9 +59,26 @@ class Orchestrator:
             attack_plan=attack_plan,
             **kwargs,
         )
+        attack_graph = self.report.build_attack_graph(
+            plan=kwargs.get("plan"),
+            attack_results=attack_results,
+            handoff=kwargs.get("handoff"),
+            session_context=kwargs.get("session_context"),
+            execution_hints=kwargs.get("execution_hints"),
+        )
+        adversarial_twin = self.report.build_adversarial_twin(
+            plan=kwargs.get("plan"),
+            attack_results=attack_results,
+            attack_graph=attack_graph,
+            handoff=kwargs.get("handoff"),
+            session_context=kwargs.get("session_context"),
+            execution_hints=kwargs.get("execution_hints"),
+        )
 
         return {
             "attacks": attack_results,
+            "attack_graph": attack_graph,
+            "adversarial_twin": adversarial_twin,
         }
 
     async def run(self, output_path: str = None) -> dict:
@@ -112,4 +129,6 @@ class Orchestrator:
             "plan": plan,
             "attacks": attack_results,
             "report": report,
+            "attack_graph": getattr(report, "attack_graph", {}) if report is not None else {},
+            "adversarial_twin": getattr(report, "adversarial_twin", {}) if report is not None else {},
         }

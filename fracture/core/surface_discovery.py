@@ -63,6 +63,63 @@ _AUTH_SIGNAL_TERMS = [
     "session",
 ]
 
+_OAUTH_HINT_TERMS = [
+    "oauth",
+    "openid",
+    "authorize",
+    "continue with google",
+    "continue with microsoft",
+    "continue with github",
+    "google sign-in",
+    "sign in with google",
+]
+
+_SSO_HINT_TERMS = [
+    "single sign-on",
+    "sso",
+    "saml",
+    "okta",
+    "azure ad",
+    "entra id",
+    "corporate login",
+]
+
+_MAGIC_LINK_HINT_TERMS = [
+    "magic link",
+    "email me a link",
+    "send link",
+    "sign-in link",
+    "verification link",
+]
+
+_OTP_HINT_TERMS = [
+    "one-time code",
+    "one time code",
+    "verification code",
+    "otp",
+    "2fa",
+    "two-factor",
+    "two factor",
+]
+
+_API_KEY_HINT_TERMS = [
+    "api key",
+    "x-api-key",
+    "personal access token",
+    "access token",
+    "bearer token",
+]
+
+_ALREADY_AUTHENTICATED_HINT_TERMS = [
+    "already signed in",
+    "authenticated",
+    "dashboard",
+    "workspace",
+    "sign out",
+    "logout",
+    "my account",
+]
+
 _AI_USEFUL_HINTS = [
     "chat",
     "message",
@@ -281,6 +338,38 @@ def _serialize_session_cookies(cookies: list[dict]) -> tuple[list[dict], str]:
     return serialized, "; ".join(header_parts)
 
 
+def _build_session_cookie_metadata(cookies: list[dict], source: str = "handoff") -> dict:
+    names = []
+    domains = []
+    for item in cookies or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "") or "").strip()
+        domain = str(item.get("domain", "") or "").strip().lower()
+        if name and name not in names:
+            names.append(name)
+        if domain and domain not in domains:
+            domains.append(domain)
+
+    redacted_parts = [f"{name}=<redacted>" for name in names]
+    note = "No session material captured."
+    if names:
+        note = "Captured browser session cookies are available for --from-scan reuse."
+
+    return {
+        "session_material_present": bool(names),
+        "session_cookie_count": len(names),
+        "session_cookie_names": names,
+        "session_cookie_domains": domains,
+        "session_cookie_source": source,
+        "session_cookie_merge_strategy": "captured_only" if names else "no_session_material",
+        "session_cookie_header": "; ".join(redacted_parts),
+        "session_cookie_header_redacted": bool(names),
+        "session_scope_applied": False,
+        "session_propagation_note": note,
+    }
+
+
 def _cookie_signature(cookies: list[dict]) -> tuple[tuple[str, str, str, str], ...]:
     signature = []
     for item in cookies or []:
@@ -332,6 +421,214 @@ def _extract_auth_metadata(
         "auth_signals": sorted(auth_signals)[:6],
         "observed_header_names": sorted(observed_header_names)[:12],
         "observed_cookie_names": sorted(observed_cookie_names)[:12],
+    }
+
+
+def _contains_any(text: str, terms: list[str]) -> bool:
+    lowered = _lower(text)
+    return any(term in lowered for term in terms)
+
+
+def _extract_auth_wall_assessment(
+    *,
+    combined_text: str,
+    target_url: str,
+    root_response_url: str,
+    login_form_detected: bool,
+    browser_requests: list[dict],
+    best_candidate: dict | None,
+    best_candidate_score: int,
+    best_candidate_intent: str,
+    auth_metadata: dict,
+    session_cookies: list[dict],
+) -> dict:
+    request_urls = " ".join(str(item.get("url", "") or "") for item in (browser_requests or []))
+    request_methods = " ".join(str(item.get("method", "") or "") for item in (browser_requests or []))
+    combined_auth_text = " ".join(
+        [
+            str(combined_text or ""),
+            str(target_url or ""),
+            str(root_response_url or ""),
+            request_urls,
+            request_methods,
+            " ".join(auth_metadata.get("auth_signals", []) or []),
+            " ".join(auth_metadata.get("observed_header_names", []) or []),
+            " ".join(auth_metadata.get("observed_cookie_names", []) or []),
+        ]
+    )
+    lowered = _lower(combined_auth_text)
+    has_password_input = bool(_PASSWORD_INPUT_RE.search(combined_text or ""))
+    has_email_input = 'type="email"' in lowered or "type='email'" in lowered or "autocomplete=\"username\"" in lowered
+    has_oauth_terms = _contains_any(combined_auth_text, _OAUTH_HINT_TERMS)
+    has_sso_terms = _contains_any(combined_auth_text, _SSO_HINT_TERMS)
+    has_magic_link_terms = _contains_any(combined_auth_text, _MAGIC_LINK_HINT_TERMS)
+    has_otp_terms = _contains_any(combined_auth_text, _OTP_HINT_TERMS)
+    has_api_key_terms = _contains_any(combined_auth_text, _API_KEY_HINT_TERMS)
+    has_already_auth_terms = _contains_any(combined_auth_text, _ALREADY_AUTHENTICATED_HINT_TERMS)
+    protected_candidate = bool(
+        isinstance(best_candidate, dict)
+        and isinstance(best_candidate.get("probe"), dict)
+        and best_candidate.get("probe", {}).get("status_code") in {401, 403, 405}
+    )
+    observed_cookie_names = list(auth_metadata.get("observed_cookie_names", []) or [])
+    session_cookie_names = [
+        str(item.get("name", "") or "").strip()
+        for item in session_cookies or []
+        if isinstance(item, dict) and str(item.get("name", "") or "").strip()
+    ]
+    auth_success_markers = []
+    already_authenticated_signals = []
+
+    if session_cookie_names:
+        auth_success_markers.append("session cookies captured")
+        already_authenticated_signals.append("session cookies present")
+    if observed_cookie_names:
+        auth_success_markers.append("authenticated request cookies observed")
+    if has_already_auth_terms and not login_form_detected:
+        auth_success_markers.append("authenticated UI markers observed")
+        already_authenticated_signals.append("authenticated UI markers observed")
+    if protected_candidate and best_candidate_score >= 8:
+        auth_success_markers.append("protected high-value endpoint observed")
+
+    auth_wall_type = "no_auth_wall"
+    auth_wall_confidence = 0.1
+    auth_wall_detected = False
+
+    if session_cookie_names and not login_form_detected:
+        auth_wall_type = "already_authenticated"
+        auth_wall_confidence = 0.9
+        auth_wall_detected = True
+    elif login_form_detected or has_password_input:
+        auth_wall_type = "form_login"
+        auth_wall_confidence = 0.95 if has_password_input else 0.8
+        auth_wall_detected = True
+    elif has_oauth_terms:
+        auth_wall_type = "oauth_redirect"
+        auth_wall_confidence = 0.82
+        auth_wall_detected = True
+    elif has_sso_terms:
+        auth_wall_type = "sso_wall"
+        auth_wall_confidence = 0.8
+        auth_wall_detected = True
+    elif has_magic_link_terms and has_email_input and not has_password_input:
+        auth_wall_type = "magic_link_gate"
+        auth_wall_confidence = 0.84
+        auth_wall_detected = True
+    elif has_otp_terms:
+        auth_wall_type = "otp_gate"
+        auth_wall_confidence = 0.84
+        auth_wall_detected = True
+    elif has_api_key_terms and not login_form_detected and not has_password_input:
+        auth_wall_type = "api_key_gate"
+        auth_wall_confidence = 0.88
+        auth_wall_detected = True
+    elif has_already_auth_terms and not login_form_detected:
+        auth_wall_type = "already_authenticated"
+        auth_wall_confidence = 0.75
+        auth_wall_detected = True
+    elif protected_candidate or _contains_any(combined_auth_text, _SESSION_HINT_TERMS):
+        auth_wall_type = "auth_required_unknown"
+        auth_wall_confidence = 0.62 if protected_candidate else 0.5
+        auth_wall_detected = True
+
+    post_login_surface_score = 0
+    if best_candidate_score >= 14:
+        post_login_surface_score += 6
+    elif best_candidate_score >= 10:
+        post_login_surface_score += 5
+    elif best_candidate_score >= 6:
+        post_login_surface_score += 3
+    elif best_candidate_score > 0:
+        post_login_surface_score += 1
+
+    if best_candidate_intent == "chat_surface":
+        post_login_surface_score += 3
+    elif best_candidate_intent in {"memory_surface", "retrieval_surface", "tool_or_agent_surface"}:
+        post_login_surface_score += 2
+    elif best_candidate_intent != "unknown_surface":
+        post_login_surface_score += 1
+    if protected_candidate:
+        post_login_surface_score += 1
+    post_login_surface_score = max(0, min(post_login_surface_score, 10))
+
+    auth_opportunity_score = post_login_surface_score
+    if auth_wall_type in {"form_login", "oauth_redirect", "sso_wall", "already_authenticated"} and post_login_surface_score >= 5:
+        auth_opportunity_score = min(10, auth_opportunity_score + 1)
+    if auth_wall_type == "api_key_gate":
+        auth_opportunity_score = max(0, auth_opportunity_score - 4)
+    if auth_wall_type == "no_auth_wall":
+        auth_opportunity_score = max(post_login_surface_score - 3, 0)
+
+    manual_login_recommended = auth_wall_type in {
+        "form_login",
+        "oauth_redirect",
+        "sso_wall",
+        "magic_link_gate",
+        "otp_gate",
+        "auth_required_unknown",
+    } and auth_opportunity_score >= 5
+    if auth_wall_type in {"already_authenticated", "api_key_gate", "no_auth_wall"}:
+        manual_login_recommended = False
+
+    session_capture_readiness = "low"
+    if auth_wall_type == "already_authenticated" or session_cookie_names:
+        session_capture_readiness = "high"
+    elif auth_wall_type in {"form_login", "oauth_redirect", "sso_wall"} and auth_opportunity_score >= 5:
+        session_capture_readiness = "high"
+    elif auth_wall_type in {"magic_link_gate", "otp_gate", "auth_required_unknown"} and auth_opportunity_score >= 5:
+        session_capture_readiness = "medium"
+    elif auth_wall_type == "api_key_gate":
+        session_capture_readiness = "low"
+
+    opportunity_label = "low"
+    if auth_opportunity_score >= 8:
+        opportunity_label = "high"
+    elif auth_opportunity_score >= 5:
+        opportunity_label = "medium"
+
+    rationale_parts = []
+    if auth_wall_type == "already_authenticated":
+        rationale_parts.append("authenticated surface markers are already present")
+    elif auth_wall_type == "form_login":
+        rationale_parts.append("a real username/password login wall was detected")
+    elif auth_wall_type == "oauth_redirect":
+        rationale_parts.append("OAuth-style redirect or provider login markers were observed")
+    elif auth_wall_type == "sso_wall":
+        rationale_parts.append("SSO/SAML-style corporate auth markers were observed")
+    elif auth_wall_type == "magic_link_gate":
+        rationale_parts.append("email-only magic-link markers were observed")
+    elif auth_wall_type == "otp_gate":
+        rationale_parts.append("one-time code or verification gate markers were observed")
+    elif auth_wall_type == "api_key_gate":
+        rationale_parts.append("API-key style auth markers suggest browser login will not help")
+    elif auth_wall_type == "auth_required_unknown":
+        rationale_parts.append("auth friction is present but the wall type is not fully resolved")
+    else:
+        rationale_parts.append("no material auth wall was detected")
+
+    if best_candidate_intent != "unknown_surface" and best_candidate_score > 0:
+        rationale_parts.append(
+            f"best post-auth candidate looks like a {best_candidate_intent} with score {best_candidate_score}"
+        )
+    if protected_candidate:
+        rationale_parts.append("the candidate probe behaved like a live protected endpoint")
+
+    auth_success_markers = list(dict.fromkeys(marker for marker in auth_success_markers if marker))[:6]
+    already_authenticated_signals = list(dict.fromkeys(marker for marker in already_authenticated_signals if marker))[:6]
+
+    return {
+        "auth_wall_detected": auth_wall_detected,
+        "auth_wall_type": auth_wall_type,
+        "auth_wall_confidence": round(auth_wall_confidence, 2),
+        "auth_success_markers": auth_success_markers,
+        "already_authenticated_signals": already_authenticated_signals,
+        "manual_login_recommended": bool(manual_login_recommended),
+        "session_capture_readiness": session_capture_readiness,
+        "post_login_surface_score": int(post_login_surface_score),
+        "auth_opportunity_score": int(auth_opportunity_score),
+        "auth_opportunity_level": opportunity_label,
+        "post_login_surface_label": best_candidate_intent if best_candidate_score > 0 else "unknown_surface",
+        "auth_wall_rationale": ". ".join(rationale_parts[:3]),
     }
 
 
@@ -913,6 +1210,7 @@ async def discover_surface(target, mode: str = "passive") -> dict:
             )
             html = response.text or ""
             content_type = _lower(response.headers.get("content-type", ""))
+            root_response_url = str(getattr(response, "url", target.url) or target.url)
             is_html = "html" in content_type or "<html" in html.lower()
 
             if not is_html:
@@ -938,6 +1236,7 @@ async def discover_surface(target, mode: str = "passive") -> dict:
                         if discovery_mode != "phantomtwin"
                         else "Playwright not available in current environment.",
                         "browser_requests": [],
+                        "root_response_url": root_response_url,
                         "recommended_target_url": target.url,
                     },
                     "success": False,
@@ -1028,6 +1327,7 @@ async def discover_surface(target, mode: str = "passive") -> dict:
                 if discovery_mode != "phantomtwin"
                 else "Playwright not available in current environment.",
                 "browser_requests": [],
+                "root_response_url": target.url,
                 "recommended_target_url": target.url,
             },
             "success": False,
@@ -1072,6 +1372,18 @@ async def discover_surface(target, mode: str = "passive") -> dict:
         )
         auth_metadata["observed_cookie_names"] = sorted(observed_cookie_names)[:12]
         auth_metadata["auth_signals"] = sorted(set(auth_metadata.get("auth_signals", []) + ["cookie"]))[:6]
+    auth_wall = _extract_auth_wall_assessment(
+        combined_text=combined_text,
+        target_url=target.url,
+        root_response_url=root_response_url,
+        login_form_detected=bool(browser_recon.get("login_form_detected", False)),
+        browser_requests=browser_recon.get("requests", [])[:12],
+        best_candidate=best_candidate,
+        best_candidate_score=best_candidate_score,
+        best_candidate_intent=best_candidate_intent,
+        auth_metadata=auth_metadata,
+        session_cookies=list(browser_recon.get("session_cookies", []) or []),
+    )
     handoff = _build_handoff(
         best_candidate=best_candidate,
         discovery_mode=discovery_mode,
@@ -1081,14 +1393,28 @@ async def discover_surface(target, mode: str = "passive") -> dict:
         invocation_profile=invocation_profile,
     )
     if isinstance(handoff, dict):
-        handoff["session_cookies"] = list(browser_recon.get("session_cookies", []) or [])
-        handoff["session_cookie_header"] = str(browser_recon.get("session_cookie_header", "") or "")
+        session_cookies = list(browser_recon.get("session_cookies", []) or [])
+        session_metadata = _build_session_cookie_metadata(session_cookies, source="handoff")
+        handoff["session_cookies"] = session_cookies
+        handoff["session_cookie_header"] = session_metadata["session_cookie_header"]
+        handoff["session_material_present"] = session_metadata["session_material_present"]
+        handoff["session_cookie_count"] = session_metadata["session_cookie_count"]
+        handoff["session_cookie_names"] = session_metadata["session_cookie_names"]
+        handoff["session_cookie_domains"] = session_metadata["session_cookie_domains"]
+        handoff["session_cookie_source"] = session_metadata["session_cookie_source"]
+        handoff["session_cookie_merge_strategy"] = session_metadata["session_cookie_merge_strategy"]
+        handoff["session_cookie_header_redacted"] = session_metadata["session_cookie_header_redacted"]
+        handoff["session_scope_applied"] = session_metadata["session_scope_applied"]
+        handoff["session_propagation_note"] = session_metadata["session_propagation_note"]
+        handoff.update(auth_wall)
 
     labels = ["api_candidates_found" if api_candidates_found else "frontend_only"]
     if likely_browser_session_required:
         labels.append("likely_browser_session_required")
     if likely_websocket_or_streaming_surface:
         labels.append("likely_websocket_or_streaming_surface")
+    if auth_wall.get("auth_wall_detected"):
+        labels.append(f"auth_wall={auth_wall.get('auth_wall_type', 'unknown')}")
     if discovery_mode == "phantomtwin":
         labels.append("phantomtwin_recon")
 
@@ -1144,6 +1470,7 @@ async def discover_surface(target, mode: str = "passive") -> dict:
             "login_form_detected": bool(browser_recon.get("login_form_detected", False)),
             "session_capture_note": str(browser_recon.get("session_capture_note", "") or ""),
             "browser_requests": browser_recon.get("requests", [])[:12],
+            "root_response_url": root_response_url,
             "recommended_target_url": best_candidate_url or target.url,
             "handoff": handoff,
             "session_required": bool(handoff.get("session_required", False)) if isinstance(handoff, dict) else False,
@@ -1151,6 +1478,7 @@ async def discover_surface(target, mode: str = "passive") -> dict:
             "auth_signals": auth_metadata.get("auth_signals", []),
             "observed_header_names": auth_metadata.get("observed_header_names", []),
             "observed_cookie_names": auth_metadata.get("observed_cookie_names", []),
+            **auth_wall,
         },
         "success": api_candidates_found or likely_browser_session_required or likely_websocket_or_streaming_surface,
         "confidence": confidence,

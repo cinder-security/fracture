@@ -34,6 +34,9 @@ class ReconAgent(BaseAgent):
         notes = str(getattr(fingerprint, "notes", "") or "").strip()
         if surface.get("response"):
             notes = (notes + " | " + str(surface["response"]).strip()).strip(" |")
+        auth_rationale = str(surface.get("details", {}).get("auth_wall_rationale", "") or "").strip()
+        if auth_rationale:
+            notes = (notes + " | " + auth_rationale).strip(" |")
 
         return AttackResult(
             module=fingerprint.module,

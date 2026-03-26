@@ -91,6 +91,23 @@ class TargetContractModuleTests(unittest.TestCase):
         )
 
         self.assertEqual(target.cookies, {"sessionid": "captured", "manual": "override"})
+        self.assertEqual(target.session_context["session_cookie_source"], "merged")
+        self.assertEqual(target.session_context["session_cookie_merge_strategy"], "manual_overrides_captured")
+        self.assertIn("manual", target.session_context["session_cookie_names"])
+        self.assertIn("sessionid", target.session_context["session_cookie_names"])
+
+    def test_target_scopes_out_session_cookies_outside_target_host(self):
+        target = AITarget(
+            url="https://example.test/api/chat/messages",
+            session_cookies=[
+                {"name": "sessionid", "value": "captured", "domain": "example.test", "path": "/"},
+                {"name": "other", "value": "skip", "domain": "elsewhere.test", "path": "/"},
+            ],
+        )
+
+        self.assertEqual(target.cookies, {"sessionid": "captured"})
+        self.assertTrue(target.session_context["session_scope_applied"])
+        self.assertEqual(target.session_context["session_scope_filtered_count"], 1)
 
     def test_extract_probe_propagates_target_contract(self):
         with patch("fracture.modules.extract.engine.httpx.AsyncClient", _DummyAsyncClient):

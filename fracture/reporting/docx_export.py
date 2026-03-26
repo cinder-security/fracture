@@ -24,6 +24,9 @@ def _meta_summary(meta: dict) -> str:
 
     pairs = []
     for key, value in meta.items():
+        key_name = str(key or "")
+        if any(token in key_name.lower() for token in ["cookie", "authorization", "token", "secret"]):
+            value = "<redacted>"
         pairs.append(f"{key}={value}")
         if len(pairs) >= 3:
             break

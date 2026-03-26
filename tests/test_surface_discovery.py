@@ -57,6 +57,68 @@ class _DummyAsyncClient:
                 content_type="application/octet-stream",
                 status_code=405,
             ),
+            "https://example.test/oauth-wall": _DummyResponse(
+                """
+                <html>
+                  <body>
+                    <h1>Sign in to continue</h1>
+                    <a href="/oauth/authorize/demo?next=/app">Continue with Google</a>
+                    <script>
+                      window.FRACTURE_OAUTH = { protectedApi: "/api/chat/messages", authorizeUrl: "/oauth/authorize/demo" };
+                    </script>
+                  </body>
+                </html>
+                """
+            ),
+            "https://example.test/api-key-wall": _DummyResponse(
+                """
+                <html>
+                  <body>
+                    <h1>Developer API Access</h1>
+                    <p>This surface requires an API key.</p>
+                    <script>
+                      window.FRACTURE_API_KEY_GATE = { apiBase: "/api/key-chat/messages", header: "X-API-Key" };
+                    </script>
+                  </body>
+                </html>
+                """
+            ),
+            "https://example.test/public-app": _DummyResponse(
+                """
+                <html>
+                  <body>
+                    <h1>Public Demo App</h1>
+                    <script>
+                      fetch("/api/public-chat/messages", { method: "POST" });
+                    </script>
+                  </body>
+                </html>
+                """
+            ),
+            "https://example.test/already-auth": _DummyResponse(
+                """
+                <html>
+                  <body>
+                    <h1>Workspace Dashboard</h1>
+                    <p>You are already signed in.</p>
+                    <a href="/logout">Sign out</a>
+                    <script>
+                      fetch("/api/chat/messages", { method: "POST" });
+                    </script>
+                  </body>
+                </html>
+                """
+            ),
+            "https://example.test/api/key-chat/messages": _DummyResponse(
+                '{"error":"api_key_required"}',
+                content_type="application/json",
+                status_code=401,
+            ),
+            "https://example.test/api/public-chat/messages": _DummyResponse(
+                '{"response":"public"}',
+                content_type="application/json",
+                status_code=200,
+            ),
         }
 
     async def __aenter__(self):
@@ -231,10 +293,110 @@ class SurfaceDiscoveryTests(unittest.TestCase):
         handoff = result["details"]["handoff"]
         self.assertTrue(result["details"]["login_form_detected"])
         self.assertEqual(result["details"]["session_capture_note"], "Session captured. 1 cookies stored.")
-        self.assertEqual(handoff["session_cookie_header"], "sessionid=secret-cookie")
+        self.assertTrue(result["details"]["auth_wall_detected"])
+        self.assertEqual(result["details"]["auth_wall_type"], "form_login")
+        self.assertGreaterEqual(result["details"]["auth_wall_confidence"], 0.9)
+        self.assertTrue(result["details"]["manual_login_recommended"])
+        self.assertEqual(result["details"]["session_capture_readiness"], "high")
+        self.assertGreaterEqual(result["details"]["auth_opportunity_score"], 8)
+        self.assertIn("username/password login wall", result["details"]["auth_wall_rationale"])
+        self.assertEqual(handoff["session_cookie_header"], "sessionid=<redacted>")
         self.assertEqual(handoff["session_cookies"][0]["name"], "sessionid")
+        self.assertEqual(handoff["session_cookie_count"], 1)
+        self.assertEqual(handoff["session_cookie_names"], ["sessionid"])
+        self.assertEqual(handoff["session_cookie_domains"], ["example.test"])
+        self.assertTrue(handoff["session_cookie_header_redacted"])
+        self.assertEqual(handoff["session_cookie_source"], "handoff")
+        self.assertEqual(handoff["auth_wall_type"], "form_login")
         self.assertIn("sessionid", handoff["observed_cookie_names"])
         self.assertNotIn("secret-cookie", str(result["details"]["invocation_profile"]))
+
+    def test_discover_surface_classifies_oauth_redirect_wall(self):
+        target = AITarget(url="https://example.test/oauth-wall")
+
+        with patch("fracture.core.surface_discovery.httpx.AsyncClient", _DummyAsyncClient):
+            result = asyncio.run(discover_surface(target))
+
+        self.assertTrue(result["details"]["auth_wall_detected"])
+        self.assertEqual(result["details"]["auth_wall_type"], "oauth_redirect")
+        self.assertGreaterEqual(result["details"]["auth_wall_confidence"], 0.8)
+        self.assertTrue(result["details"]["manual_login_recommended"])
+        self.assertEqual(result["details"]["session_capture_readiness"], "high")
+        self.assertGreaterEqual(result["details"]["auth_opportunity_score"], 7)
+        self.assertEqual(result["details"]["post_login_surface_label"], "chat_surface")
+
+    def test_discover_surface_classifies_api_key_gate_without_manual_login_recommendation(self):
+        target = AITarget(url="https://example.test/api-key-wall")
+
+        with patch("fracture.core.surface_discovery.httpx.AsyncClient", _DummyAsyncClient):
+            result = asyncio.run(discover_surface(target))
+
+        self.assertTrue(result["details"]["auth_wall_detected"])
+        self.assertEqual(result["details"]["auth_wall_type"], "api_key_gate")
+        self.assertFalse(result["details"]["manual_login_recommended"])
+        self.assertEqual(result["details"]["session_capture_readiness"], "low")
+        self.assertLessEqual(result["details"]["auth_opportunity_score"], 6)
+        self.assertIn("browser login will not help", result["details"]["auth_wall_rationale"])
+
+    def test_discover_surface_classifies_already_authenticated_surface(self):
+        target = AITarget(url="https://example.test/already-auth")
+
+        with patch(
+            "fracture.core.surface_discovery.httpx.AsyncClient",
+            _DummyAsyncClient,
+        ), patch(
+            "fracture.core.surface_discovery._run_phantomtwin_browser_recon",
+            AsyncMock(
+                return_value={
+                    "available": True,
+                    "requests": [
+                        {
+                            "url": "https://example.test/api/chat/messages",
+                            "method": "POST",
+                            "resource_type": "fetch",
+                            "header_names": ["Content-Type", "Cookie"],
+                            "cookie_names": ["sessionid"],
+                            "content_type_hint": "application/json",
+                            "accepts_json": True,
+                            "query_param_names": [],
+                            "body_field_hints": ["message"],
+                            "streaming_likely": False,
+                        }
+                    ],
+                    "note": "PhantomTwin browser recon observed authenticated workspace traffic.",
+                    "rendered_html": "<h1>Workspace Dashboard</h1><a href='/logout'>Sign out</a>",
+                    "login_form_detected": False,
+                    "session_cookies": [
+                        {
+                            "name": "sessionid",
+                            "value": "already-auth-cookie",
+                            "domain": "example.test",
+                            "path": "/",
+                        }
+                    ],
+                    "session_cookie_header": "sessionid=already-auth-cookie",
+                    "session_capture_note": "Session captured. 1 cookies stored.",
+                }
+            ),
+        ):
+            result = asyncio.run(discover_surface(target, mode="phantomtwin"))
+
+        self.assertEqual(result["details"]["auth_wall_type"], "already_authenticated")
+        self.assertFalse(result["details"]["manual_login_recommended"])
+        self.assertEqual(result["details"]["session_capture_readiness"], "high")
+        self.assertIn("session cookies present", result["details"]["already_authenticated_signals"])
+        self.assertIn("authenticated surface markers", result["details"]["auth_wall_rationale"])
+
+    def test_discover_surface_classifies_no_auth_wall_for_public_surface(self):
+        target = AITarget(url="https://example.test/public-app")
+
+        with patch("fracture.core.surface_discovery.httpx.AsyncClient", _DummyAsyncClient):
+            result = asyncio.run(discover_surface(target))
+
+        self.assertFalse(result["details"]["manual_login_recommended"])
+        self.assertEqual(result["details"]["auth_wall_type"], "no_auth_wall")
+        self.assertEqual(result["details"]["auth_opportunity_level"], "medium")
+        self.assertEqual(result["details"]["post_login_surface_label"], "chat_surface")
 
     def test_candidate_scoring_deprioritizes_telemetry_and_health_noise(self):
         target = AITarget(url="https://example.test/")

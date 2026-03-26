@@ -165,6 +165,32 @@ All main product commands support the same target-facing contract:
 - `report`: consolidated export in `json`, `docx`, or `pdf`, including executive summary, key signals, and operational limitations
 - `autopilot`: full autonomous run in console, with planning rationale, constraints, findings summary, and optional JSON when applicable
 
+## Control Center
+
+`fracture ui` launches a local read-only Control Center over existing FRACTURE artifacts for operator demos.
+
+```bash
+fracture ui --workspace /tmp/fracture-ws
+fracture ui --scan scan.json --attack attack.json --report report.json
+fracture ui --demo --presentation
+```
+
+The Control Center consumes `scan.json`, `attack.json`, and `report.json` when available and renders:
+
+- Overview: target, best candidate, auth wall posture, session summary, attackability, overall posture, recommended next step
+- Attack Graph: nodes, edges, primary path, blockers, and constraints
+- Adversarial Twin: auth profile, session profile, invocation profile, surface model, offensive signals, summary
+- Findings: findings summary, executive summary, module assessment, report rationale, key signals, operational limitations
+- Artifacts: links to sanitized `scan.json`, `attack.json`, and `report.json`
+
+The UI is read-only and sanitizes sensitive material. It does not expose full cookies, real `session_cookie_header` values, authorization headers, or secrets. Safe context such as `session_cookie_count`, `session_cookie_names`, auth wall type, session source, constraints, and rationale remains visible.
+
+Golden demo workspace:
+
+- `fracture ui --demo` loads the checked-in workspace at `demo/golden-workspace`
+- `fracture ui --demo --presentation` opens the same workspace with the executive presentation URL preconfigured
+- the UI also supports `?view=executive` and `?presentation=1` query params for a cleaner meeting mode
+
 ## CLI v1 Summary
 
 FRACTURE CLI v1 closes the following operator-facing workflow:

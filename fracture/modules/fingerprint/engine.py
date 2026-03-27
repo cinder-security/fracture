@@ -39,10 +39,14 @@ class FingerprintEngine:
     async def probe(self, prompt: str) -> str:
         try:
             async with httpx.AsyncClient(timeout=self.target.timeout, follow_redirects=True) as client:
+                _override = self.target.override_body(prompt)
+                _body = _override if _override is not None else {
+                    "message": prompt, "query": prompt, "input": prompt,
+                    "prompt": prompt, "messages": [{"role": "user", "content": prompt}],
+                }
                 r = await client.post(
                     self.target.url,
-                    json={"message": prompt, "query": prompt, "input": prompt,
-                          "prompt": prompt, "messages": [{"role": "user", "content": prompt}]},
+                    json=_body,
                     headers={"Content-Type": "application/json", **self.target.headers},
                     cookies=self.target.cookies,
                 )

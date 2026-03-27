@@ -60,9 +60,11 @@ class PrivescEngine:
         self.session_history.append({"role": "user", "content": prompt})
         try:
             async with httpx.AsyncClient(timeout=self.target.timeout, follow_redirects=True) as client:
+                _override = self.target.override_body(prompt)
+                _body = _override if _override is not None else {"message": prompt, "query": prompt, "input": prompt, "messages": self.session_history}
                 r = await client.post(
                     self.target.url,
-                    json={"message": prompt, "query": prompt, "input": prompt, "messages": self.session_history},
+                    json=_body,
                     headers={"Content-Type": "application/json", **self.target.headers},
                     cookies=self.target.cookies,
                 )

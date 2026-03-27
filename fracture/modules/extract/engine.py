@@ -252,6 +252,9 @@ class ExtractEngine:
         return sequences
 
     def _build_probe_payload_shapes(self, prompt, conversation=None):
+        _override = self.target.override_body(prompt)
+        if _override is not None:
+            return [{"name": "operator-override", "strategy": "operator", "payload": _override, "body_keys": list(_override.keys())}], list(_override.keys())
         observed, text_keys, context_keys = self._classify_hint_keys()
         base_messages = conversation or [{"role": "user", "content": prompt}]
         shapes = []

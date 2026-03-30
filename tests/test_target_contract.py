@@ -738,3 +738,113 @@ class TargetContractModuleTests(unittest.TestCase):
 
         self.assertEqual(response, "ok")
         self._assert_contract()
+
+
+class BodyOverrideTests(unittest.TestCase):
+    """Tests for AITarget.body_key / body_fields / override_body()."""
+
+    def setUp(self):
+        _DummyAsyncClient.instances.clear()
+        _DummyAsyncClient.response_queue = []
+
+    def test_override_body_returns_correct_payload(self):
+        target = AITarget(
+            url="http://x/chat",
+            body_key="message",
+            body_fields={"session_id": "default"},
+        )
+        result = target.override_body("hello world")
+        self.assertEqual(result, {"session_id": "default", "message": "hello world"})
+
+    def test_override_body_returns_none_without_body_key(self):
+        target = AITarget(url="http://x/chat")
+        self.assertIsNone(target.override_body("hello"))
+
+    def test_override_body_empty_body_key_returns_none(self):
+        target = AITarget(url="http://x/chat", body_key="", body_fields={"session_id": "default"})
+        self.assertIsNone(target.override_body("hello"))
+
+    def test_override_body_multiple_fields(self):
+        target = AITarget(
+            url="http://x/chat",
+            body_key="message",
+            body_fields={"session_id": "default", "tenant_id": "demo"},
+        )
+        result = target.override_body("payload")
+        self.assertEqual(result, {"session_id": "default", "tenant_id": "demo", "message": "payload"})
+
+    def test_override_body_collision_prompt_wins(self):
+        """When body_fields contains the same key as body_key, the prompt wins."""
+        target = AITarget(
+            url="http://x/chat",
+            body_key="message",
+            body_fields={"message": "static-value"},
+        )
+        result = target.override_body("offensive-payload")
+        self.assertEqual(result, {"message": "offensive-payload"})
+
+    def test_fingerprint_uses_override_body_exclusively(self):
+        target = AITarget(
+            url="http://x/chat",
+            body_key="message",
+            body_fields={"session_id": "default"},
+        )
+        with patch("fracture.modules.fingerprint.engine.httpx.AsyncClient", _DummyAsyncClient):
+            asyncio.run(FingerprintEngine(target).probe("test"))
+
+        _, post_kwargs = _DummyAsyncClient.instances[0].post_calls[0]
+        self.assertEqual(post_kwargs["json"], {"session_id": "default", "message": "test"})
+        self.assertNotIn("query", post_kwargs["json"])
+        self.assertNotIn("input", post_kwargs["json"])
+        self.assertNotIn("prompt", post_kwargs["json"])
+
+    def test_extract_probe_uses_override_body_exclusively(self):
+        target = AITarget(
+            url="http://x/chat",
+            body_key="message",
+            body_fields={"session_id": "default"},
+        )
+        with patch("fracture.modules.extract.engine.httpx.AsyncClient", _DummyAsyncClient):
+            asyncio.run(ExtractEngine(target).probe("test"))
+
+        _, post_kwargs = _DummyAsyncClient.instances[0].post_calls[0]
+        self.assertEqual(post_kwargs["json"], {"session_id": "default", "message": "test"})
+        self.assertNotIn("query", post_kwargs["json"])
+        self.assertNotIn("input", post_kwargs["json"])
+
+    def test_memory_probe_uses_override_body_exclusively(self):
+        target = AITarget(
+            url="http://x/chat",
+            body_key="message",
+            body_fields={"session_id": "default"},
+        )
+        with patch("fracture.modules.memory.engine.httpx.AsyncClient", _DummyAsyncClient):
+            asyncio.run(MemoryEngine(target).probe("test"))
+
+        _, post_kwargs = _DummyAsyncClient.instances[0].post_calls[0]
+        self.assertEqual(post_kwargs["json"], {"session_id": "default", "message": "test"})
+        self.assertNotIn("query", post_kwargs["json"])
+
+    def test_privesc_probe_uses_override_body_exclusively(self):
+        target = AITarget(
+            url="http://x/chat",
+            body_key="message",
+            body_fields={"session_id": "default"},
+        )
+        with patch("fracture.modules.privesc.engine.httpx.AsyncClient", _DummyAsyncClient):
+            asyncio.run(PrivescEngine(target).probe("test"))
+
+        _, post_kwargs = _DummyAsyncClient.instances[0].post_calls[0]
+        self.assertEqual(post_kwargs["json"], {"session_id": "default", "message": "test"})
+        self.assertNotIn("query", post_kwargs["json"])
+
+    def test_override_body_not_set_keeps_backward_compat_scatter(self):
+        """Without override, extract still sends multi-key scatter payload."""
+        target = AITarget(url="http://x/chat")
+        with patch("fracture.modules.extract.engine.httpx.AsyncClient", _DummyAsyncClient):
+            asyncio.run(ExtractEngine(target).probe("test"))
+
+        _, post_kwargs = _DummyAsyncClient.instances[0].post_calls[0]
+        self.assertIn("message", post_kwargs["json"])
+        self.assertIn("query", post_kwargs["json"])
+        self.assertIn("input", post_kwargs["json"])

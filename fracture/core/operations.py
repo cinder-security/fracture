@@ -20,6 +20,13 @@ _TASK_COMMAND_ALLOWLIST: dict[str, list[tuple[str, ...]]] = {
 }
 
 _APPROVAL_STRICTNESS = {"lenient", "balanced", "strict"}
+_RUN_POLICY_LIMITS = {
+    "default_command_timeout": 600,
+    "memory_limit": 200,
+    "execution_limit": 100,
+    "approval_limit": 100,
+    "decision_limit": 200,
+}
 
 
 def _utc_now() -> str:
@@ -111,22 +118,115 @@ class RunPolicy:
     updated_at: str = field(default_factory=_utc_now)
 
 
-def _normalize_run_policy(policy: RunPolicy) -> RunPolicy:
-    policy.allow_execute = bool(policy.allow_execute)
-    policy.default_command_timeout = max(1, int(policy.default_command_timeout or 20))
-    policy.auto_execute_kinds = [
-        kind for kind in _dedupe_text([str(item or "").strip().lower() for item in policy.auto_execute_kinds])
+class RunPolicyValidationError(ValueError):
+    pass
+
+
+def _coerce_policy_int(value: Any, *, field_name: str, default: int) -> int:
+    if value in (None, ""):
+        return default
+    try:
+        normalized = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise RunPolicyValidationError(
+            f"{field_name} must be an integer-compatible value; got {value!r}."
+        ) from exc
+    return max(1, min(normalized, _RUN_POLICY_LIMITS[field_name]))
+
+
+def _coerce_policy_bool(value: Any, *, field_name: str, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return bool(value)
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    raise RunPolicyValidationError(
+        f"{field_name} must be a boolean-compatible value; got {value!r}."
+    )
+
+
+def _coerce_policy_auto_execute_kinds(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, (list, tuple, set)):
+        candidates = list(value)
+    else:
+        raise RunPolicyValidationError(
+            "auto_execute_kinds must be a string or a list of task kinds."
+        )
+    return [
+        kind for kind in _dedupe_text([str(item or "").strip().lower() for item in candidates])
         if kind in _TASK_COMMAND_ALLOWLIST
     ]
-    if str(policy.approval_strictness or "").strip().lower() not in _APPROVAL_STRICTNESS:
-        policy.approval_strictness = "balanced"
+
+
+def _coerce_policy_strictness(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in _APPROVAL_STRICTNESS:
+        return normalized
+    return "balanced"
+
+
+def _normalize_run_policy(policy: RunPolicy) -> RunPolicy:
+    policy.allow_execute = _coerce_policy_bool(
+        policy.allow_execute,
+        field_name="allow_execute",
+        default=False,
+    )
+    policy.default_command_timeout = _coerce_policy_int(
+        policy.default_command_timeout,
+        field_name="default_command_timeout",
+        default=20,
+    )
+    policy.auto_execute_kinds = _coerce_policy_auto_execute_kinds(policy.auto_execute_kinds)
+    policy.approval_strictness = _coerce_policy_strictness(policy.approval_strictness)
+    policy.memory_limit = _coerce_policy_int(
+        policy.memory_limit,
+        field_name="memory_limit",
+        default=20,
+    )
+    policy.execution_limit = _coerce_policy_int(
+        policy.execution_limit,
+        field_name="execution_limit",
+        default=10,
+    )
+    policy.approval_limit = _coerce_policy_int(
+        policy.approval_limit,
+        field_name="approval_limit",
+        default=10,
+    )
+    policy.decision_limit = _coerce_policy_int(
+        policy.decision_limit,
+        field_name="decision_limit",
+        default=20,
+    )
+    if not isinstance(policy.updated_at, str) or not policy.updated_at.strip():
+        policy.updated_at = _utc_now()
     else:
-        policy.approval_strictness = str(policy.approval_strictness).strip().lower()
-    policy.memory_limit = max(1, int(policy.memory_limit or 20))
-    policy.execution_limit = max(1, int(policy.execution_limit or 10))
-    policy.approval_limit = max(1, int(policy.approval_limit or 10))
-    policy.decision_limit = max(1, int(policy.decision_limit or 20))
+        policy.updated_at = policy.updated_at.strip()
     return policy
+
+
+def _load_run_policy(raw_policy: Any) -> RunPolicy:
+    if raw_policy in (None, {}):
+        return RunPolicy()
+    if not isinstance(raw_policy, dict):
+        raise RunPolicyValidationError("run_policy must be a JSON object.")
+    allowed_fields = {field.name for field in RunPolicy.__dataclass_fields__.values()}
+    unknown_fields = sorted(set(raw_policy) - allowed_fields)
+    if unknown_fields:
+        raise RunPolicyValidationError(
+            f"run_policy contains unknown fields: {', '.join(unknown_fields)}."
+        )
+    return _normalize_run_policy(RunPolicy(**raw_policy))
 
 
 def _build_policy_summary(policy: RunPolicy) -> str:
@@ -140,8 +240,28 @@ def _build_policy_summary(policy: RunPolicy) -> str:
     )
 
 
+def _build_policy_summary_compact(policy: RunPolicy) -> dict[str, Any]:
+    auto_execute = list(policy.auto_execute_kinds)
+    return {
+        "execute": {
+            "enabled": bool(policy.allow_execute),
+            "timeout_seconds": int(policy.default_command_timeout),
+            "auto_kinds": auto_execute,
+            "auto_label": ",".join(auto_execute) if auto_execute else "none",
+        },
+        "approval": str(policy.approval_strictness),
+        "retention": {
+            "memory": int(policy.memory_limit),
+            "executions": int(policy.execution_limit),
+            "approvals": int(policy.approval_limit),
+            "decisions": int(policy.decision_limit),
+        },
+        "updated_at": str(policy.updated_at),
+    }
+
+
 def _build_memory_summary(state: "ProjectState") -> str:
-    recent_memory = state.memory[:5]
+    recent_memory = [entry for entry in state.memory if entry.kind not in _TACTICAL_MEMORY_KINDS][:5]
     recent_executions = state.executions[:5]
     recent_approvals = state.approvals[:5]
 
@@ -163,6 +283,71 @@ def _build_memory_summary(state: "ProjectState") -> str:
         f"executions=pass:{pass_count},fail:{fail_count}; "
         f"approvals=ready:{approval_ready},review:{approval_review}"
     )
+
+
+_TACTICAL_MEMORY_KINDS = {
+    "decision_memory",
+    "breakage_memory",
+    "failure_pattern_memory",
+}
+
+
+def _rebuild_tactical_memory(state: "ProjectState") -> None:
+    preserved = [entry for entry in state.memory if entry.kind not in _TACTICAL_MEMORY_KINDS]
+    derived: list[MemoryEntry] = []
+
+    for decision in state.decisions[:3]:
+        derived.append(
+            MemoryEntry(
+                kind="decision_memory",
+                summary=f"Decision kept: {decision.summary}",
+                detail=str(decision.rationale or ""),
+                timestamp=str(decision.timestamp or _utc_now()),
+            )
+        )
+
+    breakage_seen: set[tuple[str, str]] = set()
+    for execution in state.executions[:5]:
+        if execution.success or not execution.changed_files_snapshot:
+            continue
+        changed_blob = ",".join(execution.changed_files_snapshot[:3])
+        key = (execution.task_id, changed_blob)
+        if key in breakage_seen:
+            continue
+        breakage_seen.add(key)
+        derived.append(
+            MemoryEntry(
+                kind="breakage_memory",
+                summary=f"Breakage: {execution.task_id} failed after changes in {changed_blob}",
+                detail=f"{execution.command} -> exit {execution.exit_code}",
+                timestamp=str(execution.timestamp or _utc_now()),
+            )
+        )
+
+    failure_counts: dict[str, int] = {}
+    latest_failure: dict[str, ExecutionRecord] = {}
+    for execution in state.executions[:10]:
+        if execution.success:
+            continue
+        failure_counts[execution.task_id] = failure_counts.get(execution.task_id, 0) + 1
+        latest_failure.setdefault(execution.task_id, execution)
+    for task_id, count in sorted(failure_counts.items(), key=lambda item: (-item[1], item[0])):
+        if count < 2:
+            continue
+        latest = latest_failure.get(task_id)
+        detail = ""
+        if latest is not None:
+            detail = f"{latest.command} -> exit {latest.exit_code}"
+        derived.append(
+            MemoryEntry(
+                kind="failure_pattern_memory",
+                summary=f"Failure pattern: {task_id} failed {count} times recently",
+                detail=detail,
+                timestamp=str(latest.timestamp if latest is not None else _utc_now()),
+            )
+        )
+
+    state.memory = preserved + derived
 
 
 def _build_tactical_summary(state: "ProjectState") -> str:
@@ -198,6 +383,45 @@ def _build_tactical_summary(state: "ProjectState") -> str:
         f"repeat_failures={','.join(repeated_failures) or 'none'}; "
         f"stale_approvals={stale_count}; "
         f"dominant_memory={dominant_memory}"
+    )
+
+
+def _summarize_session_signal(
+    *,
+    mode: str,
+    completed: list[str],
+    last_execution: ExecutionRecord | dict[str, Any] | None,
+    approval: ApprovalSuggestion | dict[str, Any] | None,
+    next_action: str,
+) -> str:
+    done_blob = ",".join(completed[:2]) if completed else "none"
+
+    failure_blob = "none"
+    if isinstance(last_execution, dict) and last_execution:
+        if not last_execution.get("success"):
+            failure_blob = (
+                f"{last_execution.get('task_id', 'unknown')} exit={last_execution.get('exit_code', 'unknown')}"
+            )
+    elif isinstance(last_execution, ExecutionRecord) and not last_execution.success:
+        failure_blob = f"{last_execution.task_id} exit={last_execution.exit_code}"
+
+    next_blob = str(next_action or "none")
+    if isinstance(approval, dict) and approval:
+        if approval.get("stale"):
+            next_blob = f"recheck {approval.get('task_id', 'unknown')} before closing (stale)"
+        elif approval.get("ready"):
+            next_blob = f"close {approval.get('task_id', 'unknown')}"
+    elif isinstance(approval, ApprovalSuggestion):
+        if approval.stale:
+            next_blob = f"recheck {approval.task_id} before closing (stale)"
+        elif approval.ready:
+            next_blob = f"close {approval.task_id}"
+
+    return (
+        f"mode={mode or 'build'}; "
+        f"done={done_blob}; "
+        f"failed={failure_blob}; "
+        f"next={next_blob}"
     )
 
 
@@ -262,7 +486,7 @@ class ProjectMemoryStore:
         memory = [MemoryEntry(**item) for item in payload.get("memory", [])]
         executions = [ExecutionRecord(**item) for item in payload.get("executions", [])]
         approvals = [ApprovalSuggestion(**item) for item in payload.get("approvals", [])]
-        run_policy = _normalize_run_policy(RunPolicy(**payload.get("run_policy", {})))
+        run_policy = _load_run_policy(payload.get("run_policy", {}))
         return ProjectState(
             project=str(payload.get("project") or project),
             slug=str(payload.get("slug") or slug),
@@ -1052,32 +1276,14 @@ class Executor:
 
     def _build_session_summary(self, state: ProjectState, active: OperationTask) -> str:
         completed = [task.id for task in state.tasks if task.status == "done"][:3]
-        completed_blob = ", ".join(completed) if completed else "none yet"
-        command = active.command_hint or "no command hint"
-        focus_reason = state.focus_reason or f"{active.id}: base priority for {active.kind} work is currently highest"
-        execution_blob = "not run this session"
-        if state.executions:
-            latest = state.executions[0]
-            execution_blob = (
-                f"{latest.task_id} {'pass' if latest.success else 'fail'} exit={latest.exit_code}"
-            )
-
-        approval_blob = "no approval yet"
-        if state.approvals:
-            latest_approval = state.approvals[0]
-            approval_blob = (
-                f"{latest_approval.task_id} "
-                f"{'ready' if latest_approval.ready else 'review'} "
-                f"{latest_approval.confidence}"
-            )
-
-        return (
-            f"focus={active.id}/{active.kind}; "
-            f"why={focus_reason}; "
-            f"completed={completed_blob}; "
-            f"command={command}; "
-            f"execution={execution_blob}; "
-            f"approval={approval_blob}"
+        latest_execution = state.executions[0] if state.executions else None
+        latest_approval = state.approvals[0] if state.approvals else None
+        return _summarize_session_signal(
+            mode=state.operating_mode,
+            completed=completed,
+            last_execution=latest_execution,
+            approval=latest_approval,
+            next_action=state.next_action or f"{active.id}: {active.title}",
         )
 
     def _run_task_command(
@@ -1409,27 +1615,25 @@ def run_operating_loop(
         state.run_policy.allow_execute = bool(allow_execute)
         state.run_policy.updated_at = _utc_now()
     if command_timeout is not None:
-        state.run_policy.default_command_timeout = int(command_timeout)
+        state.run_policy.default_command_timeout = command_timeout
         state.run_policy.updated_at = _utc_now()
     if auto_execute_kinds is not None:
         state.run_policy.auto_execute_kinds = _dedupe_text([str(item or "") for item in auto_execute_kinds])
         state.run_policy.updated_at = _utc_now()
     if approval_strictness is not None:
-        normalized_strictness = str(approval_strictness or "").strip().lower()
-        if normalized_strictness in _APPROVAL_STRICTNESS:
-            state.run_policy.approval_strictness = normalized_strictness
-            state.run_policy.updated_at = _utc_now()
+        state.run_policy.approval_strictness = approval_strictness
+        state.run_policy.updated_at = _utc_now()
     if memory_limit is not None:
-        state.run_policy.memory_limit = max(1, int(memory_limit))
+        state.run_policy.memory_limit = memory_limit
         state.run_policy.updated_at = _utc_now()
     if execution_limit is not None:
-        state.run_policy.execution_limit = max(1, int(execution_limit))
+        state.run_policy.execution_limit = execution_limit
         state.run_policy.updated_at = _utc_now()
     if approval_limit is not None:
-        state.run_policy.approval_limit = max(1, int(approval_limit))
+        state.run_policy.approval_limit = approval_limit
         state.run_policy.updated_at = _utc_now()
     if decision_limit is not None:
-        state.run_policy.decision_limit = max(1, int(decision_limit))
+        state.run_policy.decision_limit = decision_limit
         state.run_policy.updated_at = _utc_now()
     state.run_policy = _normalize_run_policy(state.run_policy)
 
@@ -1459,6 +1663,7 @@ def run_operating_loop(
         command_timeout=effective_timeout,
         changed_files=list(context.get("changed_files", []) or []),
     )
+    _rebuild_tactical_memory(state)
     review = critic.review(
         state,
         changed_files=list(context.get("changed_files", []) or []),
@@ -1479,6 +1684,7 @@ def run_operating_loop(
         "context": context,
         "effective_policy": asdict(state.run_policy),
         "policy_summary": _build_policy_summary(state.run_policy),
+        "policy_summary_compact": _build_policy_summary_compact(state.run_policy),
         "memory_summary": state.memory_summary,
         "tactical_summary": state.tactical_summary,
         "planner_posture": _build_planner_posture(state),
@@ -1496,40 +1702,12 @@ def _apply_retention_policy(state: ProjectState) -> None:
 
 
 def _compose_session_summary(state: ProjectState, review: dict[str, Any]) -> str:
-    focus = next((task for task in state.tasks if task.status == "in_progress"), None)
-    focus_blob = f"{focus.id}/{focus.kind}" if focus is not None else "none"
     completed = [task.id for task in state.tasks if task.status == "done"][:3]
-    completed_blob = ", ".join(completed) if completed else "none yet"
-    command_blob = review.get("recommended_command", "none") or "none"
     mode_blob = review.get("operating_mode", state.operating_mode) or "build"
-
-    last_execution = review.get("last_execution") or {}
-    if last_execution:
-        execution_blob = (
-            f"{last_execution.get('task_id', 'unknown')} "
-            f"{'pass' if last_execution.get('success') else 'fail'} "
-            f"exit={last_execution.get('exit_code', 'unknown')}"
-        )
-    else:
-        execution_blob = "not run this session"
-
-    approval = review.get("approval") or {}
-    if approval:
-        approval_blob = (
-            f"{approval.get('task_id', 'unknown')} "
-            f"{'ready' if approval.get('ready') else 'review'} "
-            f"{approval.get('confidence', 'low')}"
-            f"{' stale' if approval.get('stale') else ''}"
-        )
-    else:
-        approval_blob = "no approval yet"
-
-    return (
-        f"mode={mode_blob}; "
-        f"focus={focus_blob}; "
-        f"why={review.get('focus_reason', state.focus_reason) or 'none'}; "
-        f"completed={completed_blob}; "
-        f"command={command_blob}; "
-        f"execution={execution_blob}; "
-        f"approval={approval_blob}"
+    return _summarize_session_signal(
+        mode=mode_blob,
+        completed=completed,
+        last_execution=review.get("last_execution"),
+        approval=review.get("approval"),
+        next_action=review.get("next_action", "") or state.next_action,
     )

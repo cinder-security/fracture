@@ -1287,8 +1287,9 @@ class UICommandTests(unittest.TestCase):
             self.assertTrue(payload["review"]["focus_files"])
             self.assertTrue(payload["review"]["session_summary"])
             self.assertTrue(payload["review"]["focus_reason"])
-            self.assertIn("focus=", payload["review"]["session_summary"])
-            self.assertIn("why=", payload["review"]["session_summary"])
+            self.assertIn("done=", payload["review"]["session_summary"])
+            self.assertIn("failed=", payload["review"]["session_summary"])
+            self.assertIn("next=", payload["review"]["session_summary"])
             self.assertIsNone(payload["review"]["approval"])
             self.assertTrue(Path(payload["artifact_path"]).exists())
             self.assertIn("Fracture Operate", result.output)
@@ -1372,8 +1373,8 @@ class UICommandTests(unittest.TestCase):
             self.assertEqual(payload["approvals"][0]["task_id"], "T03")
             self.assertIn("--done T03", payload["approvals"][0]["suggested_command"])
             self.assertIn("command passed", payload["memory"][0]["summary"])
-            self.assertIn("execution=T03 pass exit=0", payload["last_session_summary"])
-            self.assertIn("approval=T03 ready", payload["last_session_summary"])
+            self.assertIn("failed=none", payload["last_session_summary"])
+            self.assertIn("next=close T03", payload["last_session_summary"])
             self.assertIn("Last Execution", result.output)
             self.assertIn("Approval Gate", result.output)
 
@@ -2275,8 +2276,132 @@ class UICommandTests(unittest.TestCase):
 
             snapshot = json.loads((workspace / "operate.json").read_text())
             self.assertIn("policy_summary", snapshot)
+            self.assertIn("policy_summary_compact", snapshot)
             self.assertIn("approval=balanced", snapshot["policy_summary"])
             self.assertIn("auto=implementation", snapshot["policy_summary"])
+            self.assertTrue(snapshot["policy_summary_compact"]["execute"]["enabled"])
+            self.assertEqual(snapshot["policy_summary_compact"]["execute"]["timeout_seconds"], 1)
+            self.assertEqual(snapshot["policy_summary_compact"]["execute"]["auto_kinds"], ["implementation"])
+            self.assertEqual(snapshot["policy_summary_compact"]["execute"]["auto_label"], "implementation")
+            self.assertEqual(snapshot["policy_summary_compact"]["approval"], "balanced")
+            self.assertEqual(snapshot["policy_summary_compact"]["retention"]["memory"], 1)
+            self.assertEqual(snapshot["policy_summary_compact"]["retention"]["executions"], 1)
+            self.assertEqual(snapshot["policy_summary_compact"]["retention"]["approvals"], 1)
+            self.assertEqual(snapshot["policy_summary_compact"]["retention"]["decisions"], 1)
+
+    def test_operate_command_renders_compact_policy_summary_in_console(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# demo\n")
+
+            result = self.runner.invoke(
+                app,
+                [
+                    "operate",
+                    "--workspace", str(workspace),
+                    "--objective", "Build the operating loop",
+                    "--allow-execute",
+                    "--command-timeout", "33",
+                    "--auto-execute-kind", "implementation",
+                    "--auto-execute-kind", "validation",
+                    "--approval-strictness", "strict",
+                    "--memory-limit", "7",
+                    "--execution-limit", "5",
+                    "--approval-limit", "4",
+                    "--decision-limit", "6",
+                ],
+            )
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            flattened_output = " ".join(result.output.split())
+            self.assertIn("Policy:", flattened_output)
+            self.assertIn("exec=on (timeout 33s, auto implementation,validation)", flattened_output)
+            self.assertIn("Approval: strict", flattened_output)
+            self.assertIn("Retention: memory 7 / exec 5 / approvals 4 / decisions 6", flattened_output)
+
+    def test_operate_command_clamps_run_policy_limits_and_sanitizes_values(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# demo\n")
+
+            first = self.runner.invoke(
+                app,
+                [
+                    "operate",
+                    "--workspace", str(workspace),
+                    "--objective", "Build the operating loop",
+                ],
+            )
+            self.assertEqual(first.exit_code, 0, msg=first.output)
+
+            state_path = self._operation_state_path(workspace)
+            payload = json.loads(state_path.read_text())
+            payload["run_policy"] = {
+                "allow_execute": "yes",
+                "default_command_timeout": 9999,
+                "auto_execute_kinds": "validation",
+                "approval_strictness": "STRICT ",
+                "memory_limit": 999,
+                "execution_limit": 999,
+                "approval_limit": 999,
+                "decision_limit": 999,
+                "updated_at": " 2026-04-02T00:00:00+00:00 ",
+            }
+            state_path.write_text(json.dumps(payload, indent=2))
+
+            second = self.runner.invoke(
+                app,
+                [
+                    "operate",
+                    "--workspace", str(workspace),
+                    "--objective", "Build the operating loop",
+                ],
+            )
+            self.assertEqual(second.exit_code, 0, msg=second.output)
+
+            updated = json.loads(state_path.read_text())
+            self.assertTrue(updated["run_policy"]["allow_execute"])
+            self.assertEqual(updated["run_policy"]["default_command_timeout"], 600)
+            self.assertEqual(updated["run_policy"]["auto_execute_kinds"], ["validation"])
+            self.assertEqual(updated["run_policy"]["approval_strictness"], "strict")
+            self.assertEqual(updated["run_policy"]["memory_limit"], 200)
+            self.assertEqual(updated["run_policy"]["execution_limit"], 100)
+            self.assertEqual(updated["run_policy"]["approval_limit"], 100)
+            self.assertEqual(updated["run_policy"]["decision_limit"], 200)
+            self.assertEqual(updated["run_policy"]["updated_at"], "2026-04-02T00:00:00+00:00")
+
+    def test_operate_command_reports_malformed_run_policy_clearly(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# demo\n")
+
+            first = self.runner.invoke(
+                app,
+                [
+                    "operate",
+                    "--workspace", str(workspace),
+                    "--objective", "Build the operating loop",
+                ],
+            )
+            self.assertEqual(first.exit_code, 0, msg=first.output)
+
+            state_path = self._operation_state_path(workspace)
+            payload = json.loads(state_path.read_text())
+            payload["run_policy"]["default_command_timeout"] = "fast"
+            state_path.write_text(json.dumps(payload, indent=2))
+
+            second = self.runner.invoke(
+                app,
+                [
+                    "operate",
+                    "--workspace", str(workspace),
+                    "--objective", "Build the operating loop",
+                ],
+            )
+            self.assertNotEqual(second.exit_code, 0)
+            self.assertIn("Invalid run policy", second.output)
+            self.assertIn("default_command_timeout", second.output)
+            self.assertIn("integer-compatible value", second.output)
+            self.assertIn("'fast'", second.output)
 
     def test_operate_command_emits_memory_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2375,6 +2500,153 @@ class UICommandTests(unittest.TestCase):
             self.assertIn("repeat_failures=T03:2", updated["tactical_summary"])
             self.assertIn("stale_approvals=1", updated["tactical_summary"])
             self.assertIn("dominant_memory=command_execution", updated["tactical_summary"])
+
+    def test_operate_command_builds_tactical_memory_by_event_type(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# demo\n")
+
+            first = self.runner.invoke(
+                app,
+                [
+                    "operate",
+                    "--workspace", str(workspace),
+                    "--objective", "Build the operating loop",
+                ],
+            )
+            self.assertEqual(first.exit_code, 0, msg=first.output)
+
+            state_path = self._operation_state_path(workspace)
+            payload = json.loads(state_path.read_text())
+            payload["decisions"] = [
+                {"summary": "Completed T01", "rationale": "Mapped the architecture", "timestamp": "2026-03-30T00:00:03+00:00"},
+                {"summary": "Executed T03", "rationale": "python -m pytest -> exit 1", "timestamp": "2026-03-30T00:00:02+00:00"},
+            ]
+            payload["executions"] = [
+                {
+                    "task_id": "T03",
+                    "command": "python -m pytest tests/test_cli_smoke.py -q",
+                    "success": False,
+                    "exit_code": 1,
+                    "stdout": "1 failed",
+                    "stderr": "traceback",
+                    "changed_files_snapshot": ["fracture/core/operations.py", "fracture/cli.py"],
+                    "timestamp": "2026-03-30T00:00:02+00:00",
+                },
+                {
+                    "task_id": "T03",
+                    "command": "python -m pytest tests/test_cli_smoke.py -q",
+                    "success": False,
+                    "exit_code": 1,
+                    "stdout": "1 failed",
+                    "stderr": "traceback",
+                    "changed_files_snapshot": ["fracture/core/operations.py"],
+                    "timestamp": "2026-03-30T00:00:01+00:00",
+                },
+            ]
+            payload["memory"] = [
+                {"kind": "note", "summary": "operator note", "detail": "", "timestamp": "2026-03-30T00:00:00+00:00"},
+            ]
+            state_path.write_text(json.dumps(payload, indent=2))
+
+            second = self.runner.invoke(
+                app,
+                [
+                    "operate",
+                    "--workspace", str(workspace),
+                    "--objective", "Build the operating loop",
+                    "--output", str(workspace / "operate.json"),
+                ],
+            )
+            self.assertEqual(second.exit_code, 0, msg=second.output)
+
+            updated = json.loads((workspace / "operate.json").read_text())
+            memory = updated["state"]["memory"]
+            kinds = [entry["kind"] for entry in memory[:6]]
+            self.assertIn("decision_memory", kinds)
+            self.assertIn("breakage_memory", kinds)
+            self.assertIn("failure_pattern_memory", kinds)
+            summaries = [entry["summary"] for entry in memory[:6]]
+            self.assertIn("Decision kept: Completed T01", summaries)
+            self.assertIn(
+                "Breakage: T03 failed after changes in fracture/core/operations.py,fracture/cli.py",
+                summaries,
+            )
+            self.assertIn("Failure pattern: T03 failed 2 times recently", summaries)
+            self.assertIn("Decision kept: Completed T01", updated["review"]["memory_highlights"])
+
+    def test_operate_command_rebuilds_tactical_memory_without_duplicates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# demo\n")
+
+            first = self.runner.invoke(
+                app,
+                [
+                    "operate",
+                    "--workspace", str(workspace),
+                    "--objective", "Build the operating loop",
+                ],
+            )
+            self.assertEqual(first.exit_code, 0, msg=first.output)
+
+            state_path = self._operation_state_path(workspace)
+            payload = json.loads(state_path.read_text())
+            payload["decisions"] = [
+                {"summary": "Completed T01", "rationale": "Mapped the architecture", "timestamp": "2026-03-30T00:00:03+00:00"},
+            ]
+            payload["executions"] = [
+                {
+                    "task_id": "T03",
+                    "command": "python -m pytest tests/test_cli_smoke.py -q",
+                    "success": False,
+                    "exit_code": 1,
+                    "stdout": "1 failed",
+                    "stderr": "traceback",
+                    "changed_files_snapshot": ["fracture/core/operations.py"],
+                    "timestamp": "2026-03-30T00:00:02+00:00",
+                },
+                {
+                    "task_id": "T03",
+                    "command": "python -m pytest tests/test_cli_smoke.py -q",
+                    "success": False,
+                    "exit_code": 1,
+                    "stdout": "1 failed",
+                    "stderr": "traceback",
+                    "changed_files_snapshot": ["fracture/core/operations.py"],
+                    "timestamp": "2026-03-30T00:00:01+00:00",
+                },
+            ]
+            state_path.write_text(json.dumps(payload, indent=2))
+
+            second = self.runner.invoke(
+                app,
+                [
+                    "operate",
+                    "--workspace", str(workspace),
+                    "--objective", "Build the operating loop",
+                ],
+            )
+            self.assertEqual(second.exit_code, 0, msg=second.output)
+
+            third = self.runner.invoke(
+                app,
+                [
+                    "operate",
+                    "--workspace", str(workspace),
+                    "--objective", "Build the operating loop",
+                ],
+            )
+            self.assertEqual(third.exit_code, 0, msg=third.output)
+
+            updated = json.loads(state_path.read_text())
+            summaries = [entry["summary"] for entry in updated["memory"]]
+            self.assertEqual(summaries.count("Decision kept: Completed T01"), 1)
+            self.assertEqual(
+                summaries.count("Breakage: T03 failed after changes in fracture/core/operations.py"),
+                1,
+            )
+            self.assertEqual(summaries.count("Failure pattern: T03 failed 2 times recently"), 1)
 
     def test_operate_command_emits_planner_posture(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2537,6 +2809,7 @@ class UICommandTests(unittest.TestCase):
             payload = json.loads(state_path.read_text())
             self.assertEqual(payload["operating_mode"], "build")
             self.assertIn("mode=build", payload["last_session_summary"])
+            self.assertIn("done=none", payload["last_session_summary"])
 
     def test_operate_command_enters_hotfix_mode_from_objective(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2623,3 +2896,41 @@ class UICommandTests(unittest.TestCase):
             updated = json.loads(state_path.read_text())
             self.assertEqual(updated["operating_mode"], "stabilize")
             self.assertIn("mode=stabilize", updated["last_session_summary"])
+
+    def test_operate_command_keeps_session_recap_short_and_signal_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# demo\n")
+
+            with patch(
+                "fracture.core.operations.run_safe_command",
+                return_value=ExecutionRecord(
+                    task_id="T03",
+                    command="python -m pytest tests/test_cli_smoke.py -q",
+                    success=False,
+                    exit_code=1,
+                    stdout="1 failed",
+                    stderr="traceback",
+                ),
+            ):
+                result = self.runner.invoke(
+                    app,
+                    [
+                        "operate",
+                        "--workspace", str(workspace),
+                        "--objective", "Build the operating loop",
+                        "--execute",
+                    ],
+                )
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+
+            payload = json.loads(self._operation_state_path(workspace).read_text())
+            recap = payload["last_session_summary"]
+            self.assertIn("mode=build", recap)
+            self.assertIn("done=none", recap)
+            self.assertIn("failed=T03 exit=1", recap)
+            self.assertIn("next=T03:", recap)
+            self.assertNotIn("focus=", recap)
+            self.assertNotIn("why=", recap)
+            self.assertNotIn("command=", recap)
+            self.assertNotIn("approval=", recap)

@@ -109,6 +109,22 @@ def _print_output_saved(label: str, output_path: str):
     console.print(f"\n[dim]{label} saved to {output_path}[/dim]")
 
 
+def _format_policy_summary_for_console(result: dict) -> str:
+    compact = result.get("policy_summary_compact", {}) if isinstance(result, dict) else {}
+    execute = compact.get("execute", {}) if isinstance(compact, dict) else {}
+    retention = compact.get("retention", {}) if isinstance(compact, dict) else {}
+    if not execute or not retention:
+        return str(result.get("policy_summary", "none") or "none")
+    return (
+        f"exec={'on' if execute.get('enabled') else 'off'} "
+        f"(timeout {execute.get('timeout_seconds', 'n/a')}s, auto {execute.get('auto_label', 'none') or 'none'})\n"
+        f"[bold]Approval:[/bold]     [dim]{compact.get('approval', 'balanced')}[/dim]\n"
+        f"[bold]Retention:[/bold]    [dim]memory {retention.get('memory', 'n/a')} / "
+        f"exec {retention.get('executions', 'n/a')} / approvals {retention.get('approvals', 'n/a')} / "
+        f"decisions {retention.get('decisions', 'n/a')}[/dim]"
+    )
+
+
 def _extract_handoff_session_cookies(handoff: dict | None) -> list[dict]:
     if not isinstance(handoff, dict):
         return []
@@ -260,6 +276,7 @@ def _print_operate_summary(result: dict):
         and str(active_task.get("id", "")) != str(in_progress_task.get("id", ""))
     ):
         focus_source = "planner"
+    policy_summary_console = _format_policy_summary_for_console(result)
     validation_alert = next(
         (
             note
@@ -278,7 +295,7 @@ def _print_operate_summary(result: dict):
         f"[bold]Git:[/bold]           [dim]{context.get('git_branch', 'detached') or 'detached'} / {'dirty' if context.get('git_dirty') else 'clean'}[/dim]\n"
         f"[bold]Mode:[/bold]          [dim]{review.get('operating_mode', state.get('operating_mode', 'build')) or 'build'}[/dim]\n"
         f"[bold]Planner Posture:[/bold] [dim]{result.get('planner_posture', 'none')}[/dim]\n"
-        f"[bold]Policy:[/bold]        [dim]{result.get('policy_summary', 'none')}[/dim]\n"
+        f"[bold]Policy:[/bold]        [dim]{policy_summary_console}[/dim]\n"
         f"[bold]Memory Summary:[/bold] [dim]{result.get('memory_summary', 'none')}[/dim]\n"
         f"[bold]Tactical Summary:[/bold] [dim]{result.get('tactical_summary', 'none')}[/dim]\n"
         f"[bold]Focus Source:[/bold] [dim]{focus_source}[/dim]\n"
@@ -1794,25 +1811,28 @@ def operate(
     ),
 ):
     """Run the Fracture operating loop with memory, planning, execution, and critique."""
-    from fracture.core.operations import run_operating_loop
+    from fracture.core.operations import RunPolicyValidationError, run_operating_loop
 
     console.print(BANNER)
-    result = run_operating_loop(
-        objective=objective,
-        workspace=workspace,
-        project=project,
-        done=done,
-        note=note,
-        execute_recommended=True if execute else None,
-        command_timeout=command_timeout,
-        allow_execute=allow_execute,
-        auto_execute_kinds=auto_execute_kind,
-        approval_strictness=approval_strictness,
-        memory_limit=memory_limit,
-        execution_limit=execution_limit,
-        approval_limit=approval_limit,
-        decision_limit=decision_limit,
-    )
+    try:
+        result = run_operating_loop(
+            objective=objective,
+            workspace=workspace,
+            project=project,
+            done=done,
+            note=note,
+            execute_recommended=True if execute else None,
+            command_timeout=command_timeout,
+            allow_execute=allow_execute,
+            auto_execute_kinds=auto_execute_kind,
+            approval_strictness=approval_strictness,
+            memory_limit=memory_limit,
+            execution_limit=execution_limit,
+            approval_limit=approval_limit,
+            decision_limit=decision_limit,
+        )
+    except RunPolicyValidationError as exc:
+        raise typer.BadParameter(f"Invalid run policy: {exc}") from exc
     _print_operate_summary(result)
 
     if output:

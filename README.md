@@ -137,7 +137,22 @@ fracture operate \
 ```
 
 Once stored, later `fracture operate` runs reuse that policy unless you override it explicitly.
-Fracture normalizes invalid policy values back into safe defaults and emits a compact policy summary on every run.
+Fracture emits a compact policy summary on every run in both JSON and console output. The JSON snapshot includes the legacy `policy_summary` string plus a structured `policy_summary_compact` object that breaks out execute settings, approval strictness, and retention limits.
+
+Run policy loading is strict about malformed configuration. Invalid scalar values such as a non-numeric timeout now raise a clear CLI error, while recoverable values are sanitized into safe bounds:
+
+- invalid `approval_strictness` falls back to `balanced`
+- unknown `auto_execute_kinds` are dropped
+- numeric limits are clamped into safe ranges
+- boolean-like persisted values such as `yes` and `no` are normalized
+
+Session recap output is intentionally shorter now. Instead of repeating full focus and command context, Fracture records only the highest-signal recap fields:
+
+- what was completed
+- what failed
+- the next action
+
+Fracture also derives tactical memory by event type on each run. It keeps recent decisions, remembers which changed files preceded a failure, and records repeated failure patterns without duplicating prior tactical entries.
 
 ## Reading The Triage
 

@@ -234,6 +234,169 @@ def _print_operator_cue(title: str, lines: list[str]):
     ))
 
 
+def _print_operate_summary(result: dict):
+    state = result.get("state", {}) if isinstance(result, dict) else {}
+    review = result.get("review", {}) if isinstance(result, dict) else {}
+    context = result.get("context", {}) if isinstance(result, dict) else {}
+    counts = review.get("task_counts", {}) if isinstance(review, dict) else {}
+    preferred_focus_task_id = str(state.get("preferred_focus_task_id", "") or "")
+    in_progress_task = next(
+        (task for task in (state.get("tasks", []) or []) if task.get("status") == "in_progress"),
+        None,
+    )
+    active_task = next(
+        (
+            task for task in (state.get("tasks", []) or [])
+            if str(task.get("id", "")) == preferred_focus_task_id
+        ),
+        None,
+    )
+    if active_task is None:
+        active_task = in_progress_task
+    focus_source = "active task"
+    if (
+        active_task is not None
+        and in_progress_task is not None
+        and str(active_task.get("id", "")) != str(in_progress_task.get("id", ""))
+    ):
+        focus_source = "planner"
+    validation_alert = next(
+        (
+            note
+            for task in (state.get("tasks", []) or [])
+            for note in (task.get("notes", []) or [])
+            if str(note).startswith("Validation plan: broadened from the previous integration run")
+        ),
+        "",
+    )
+
+    console.print(Panel(
+        f"[bold]Project:[/bold]       [cyan]{result.get('project', 'unknown')}[/cyan]\n"
+        f"[bold]Objective:[/bold]     [dim]{result.get('objective', '') or 'none'}[/dim]\n"
+        f"[bold]Workspace:[/bold]     [dim]{context.get('workspace', 'unknown')}[/dim]\n"
+        f"[bold]Stack:[/bold]         [dim]{context.get('primary_language', 'unknown')}[/dim]\n"
+        f"[bold]Git:[/bold]           [dim]{context.get('git_branch', 'detached') or 'detached'} / {'dirty' if context.get('git_dirty') else 'clean'}[/dim]\n"
+        f"[bold]Mode:[/bold]          [dim]{review.get('operating_mode', state.get('operating_mode', 'build')) or 'build'}[/dim]\n"
+        f"[bold]Planner Posture:[/bold] [dim]{result.get('planner_posture', 'none')}[/dim]\n"
+        f"[bold]Policy:[/bold]        [dim]{result.get('policy_summary', 'none')}[/dim]\n"
+        f"[bold]Memory Summary:[/bold] [dim]{result.get('memory_summary', 'none')}[/dim]\n"
+        f"[bold]Tactical Summary:[/bold] [dim]{result.get('tactical_summary', 'none')}[/dim]\n"
+        f"[bold]Focus Source:[/bold] [dim]{focus_source}[/dim]\n"
+        f"[bold]Current Focus:[/bold] [yellow]{state.get('current_focus', 'none') or 'none'}[/yellow]\n"
+        f"[bold]Focus Why:[/bold]    [dim]{review.get('focus_reason', 'none') or 'none'}[/dim]\n"
+        f"[bold]Next Action:[/bold]   [green]{state.get('next_action', 'none') or 'none'}[/green]\n"
+        f"[bold]Tasks:[/bold]         [dim]pending={counts.get('pending', 0)} in_progress={counts.get('in_progress', 0)} done={counts.get('done', 0)}[/dim]\n"
+        f"[bold]Sessions:[/bold]      [dim]{state.get('session_count', 0)}[/dim]",
+        title="[bold red]Fracture Operate[/bold red]",
+        border_style="red",
+    ))
+
+    table = Table(title="Plan Slice", show_header=True, header_style="bold red")
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Status", style="yellow")
+    table.add_column("Kind", style="magenta")
+    table.add_column("Task", style="white")
+    table.add_column("Priority", justify="right")
+
+    for task in (state.get("tasks", []) or [])[:6]:
+        status_label = str(task.get("status", ""))
+        if str(task.get("id", "")) == preferred_focus_task_id:
+            status_label = f"{status_label} | focus" if status_label else "focus"
+        table.add_row(
+            str(task.get("id", "")),
+            status_label,
+            str(task.get("kind", "")),
+            str(task.get("title", "")),
+            str(task.get("priority", "")),
+        )
+
+    console.print(table)
+    if active_task:
+        active_panel_title = "Active Task"
+        if (
+            in_progress_task is not None
+            and str(active_task.get("id", "")) != str(in_progress_task.get("id", ""))
+        ):
+            active_panel_title = "Planner Focus"
+        validation_note = next(
+            (
+                note for note in (active_task.get("notes", []) or [])
+                if str(note).startswith("Validation plan:")
+            ),
+            "",
+        )
+        other_notes = [
+            str(note) for note in (active_task.get("notes", []) or [])
+            if not str(note).startswith("Validation plan:")
+        ]
+        console.print(Panel(
+            f"[bold]Files:[/bold]   [dim]{', '.join(active_task.get('file_hints', [])[:4]) or 'none'}[/dim]\n"
+            f"[bold]Command:[/bold] [green]{active_task.get('command_hint', 'none') or 'none'}[/green]\n"
+            f"[bold]Validation:[/bold] [dim]{validation_note or 'none'}[/dim]\n"
+            f"[bold]Notes:[/bold]   [dim]{'; '.join(other_notes[:3]) or 'none'}[/dim]",
+            title=f"[bold yellow]{active_panel_title}[/bold yellow]",
+            border_style="yellow",
+        ))
+    approval = review.get("approval") if isinstance(review, dict) else None
+    closure_risk = ""
+    if isinstance(approval, dict):
+        closure_risk = next(
+            (
+                reason for reason in (approval.get("rationale", []) or [])
+                if "Validation scope is narrow" in str(reason)
+            ),
+            "",
+        )
+    next_validation_step = "none"
+    if closure_risk:
+        next_validation_step = "run broader validation before approval"
+    last_execution = review.get("last_execution") if isinstance(review, dict) else None
+    if isinstance(last_execution, dict):
+        console.print(Panel(
+            f"[bold]Task:[/bold]    [cyan]{last_execution.get('task_id', 'unknown')}[/cyan]\n"
+            f"[bold]Command:[/bold] [dim]{last_execution.get('command', 'none')}[/dim]\n"
+            f"[bold]Result:[/bold]  [{'green' if last_execution.get('success') else 'red'}]{'pass' if last_execution.get('success') else 'fail'}[/]\n"
+            f"[bold]Exit:[/bold]    [dim]{last_execution.get('exit_code', 'unknown')}[/dim]\n"
+            f"[bold]Closure Risk:[/bold] [dim]{closure_risk or 'none'}[/dim]\n"
+            f"[bold]Stdout:[/bold]  [dim]{last_execution.get('stdout', '') or 'none'}[/dim]\n"
+            f"[bold]Stderr:[/bold]  [dim]{last_execution.get('stderr', '') or 'none'}[/dim]",
+            title="[bold yellow]Last Execution[/bold yellow]",
+            border_style="yellow",
+        ))
+    if isinstance(approval, dict):
+        ready_style = "green" if approval.get("ready") else "yellow"
+        ready_label = "ready to approve" if approval.get("ready") else "needs review"
+        if approval.get("stale"):
+            ready_label += " (stale)"
+        console.print(Panel(
+            f"[bold]Task:[/bold]       [cyan]{approval.get('task_id', 'unknown')}[/cyan]\n"
+            f"[bold]Decision:[/bold]   [{ready_style}]{ready_label}[/]\n"
+            f"[bold]Confidence:[/bold] [dim]{approval.get('confidence', 'low')}[/dim]\n"
+            f"[bold]Why:[/bold]        [dim]{'; '.join(approval.get('rationale', [])[:3]) or 'none'}[/dim]\n"
+            f"[bold]Approve With:[/bold] [green]{approval.get('suggested_command', 'none')}[/green]",
+            title="[bold yellow]Approval Gate[/bold yellow]",
+            border_style="yellow",
+        ))
+    _print_operator_cue(
+        "Operate Cue",
+        [
+            f"Memory: {', '.join(review.get('memory_highlights', []) or ['none'])}",
+            f"Review: {'; '.join(review.get('findings', [])[:2]) or 'none'}",
+            f"Next Validation: {next_validation_step}",
+            f"Validation Alert: {validation_alert or 'none'}",
+            f"Command: {review.get('recommended_command', 'none') or 'none'}",
+            f"Mode: {review.get('operating_mode', state.get('operating_mode', 'build')) or 'build'}",
+            f"Planner: {result.get('planner_posture', 'none') or 'none'}",
+            f"Focus Files: {', '.join(review.get('focus_files', [])[:4]) or 'none'}",
+            f"Focus Why: {review.get('focus_reason', 'none') or 'none'}",
+            f"Approval: {('ready' if (approval or {}).get('ready') else 'review') if isinstance(approval, dict) else 'none'} / {approval.get('confidence', 'low') if isinstance(approval, dict) else 'n/a'}",
+            f"Session Recap: {review.get('session_summary', 'none') or 'none'}",
+            f"Artifact: {result.get('artifact_path', 'none')}",
+            f"Workspace shape: dirs={', '.join(context.get('top_dirs', [])[:4]) or 'none'} files={', '.join(context.get('top_files', [])[:4]) or 'none'}",
+        ],
+    )
+
+
 def _build_auth_context(
     *,
     handoff: dict | None = None,
@@ -1548,6 +1711,114 @@ def ui(
             "[dim]Artifacts are served read-only and sanitized. Press Ctrl+C to stop.[/dim]"
         ),
     )
+
+
+@app.command()
+def operate(
+    objective: str = typer.Option(
+        ...,
+        "--objective",
+        "-g",
+        help="Current objective for the project operating loop",
+    ),
+    workspace: str = typer.Option(
+        ".",
+        "--workspace",
+        help="Workspace directory where Fracture will persist operating state",
+    ),
+    project: Optional[str] = typer.Option(
+        None,
+        "--project",
+        help="Optional project name override; defaults to the workspace folder name",
+    ),
+    done: Optional[str] = typer.Option(
+        None,
+        "--done",
+        help="Mark a task ID or exact task title as completed before recalculating the loop",
+    ),
+    note: Optional[str] = typer.Option(
+        None,
+        "--note",
+        help="Store an operator note in project memory",
+    ),
+    output: Optional[str] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Save the operating-loop snapshot to JSON",
+    ),
+    execute: bool = typer.Option(
+        False,
+        "--execute",
+        help="Run the recommended command for the active task and record the result",
+    ),
+    allow_execute: Optional[bool] = typer.Option(
+        None,
+        "--allow-execute/--disallow-execute",
+        help="Persist whether this project allows execute-capable runs by default",
+    ),
+    command_timeout: Optional[int] = typer.Option(
+        None,
+        "--command-timeout",
+        help="Timeout in seconds for --execute command runs; persists when provided",
+    ),
+    auto_execute_kind: Optional[list[str]] = typer.Option(
+        None,
+        "--auto-execute-kind",
+        help="Persist task kinds that may auto-execute when project policy allows it; repeatable",
+    ),
+    approval_strictness: Optional[str] = typer.Option(
+        None,
+        "--approval-strictness",
+        help="Persist approval policy: lenient, balanced, or strict",
+    ),
+    memory_limit: Optional[int] = typer.Option(
+        None,
+        "--memory-limit",
+        help="Persist how many memory entries to retain per project",
+    ),
+    execution_limit: Optional[int] = typer.Option(
+        None,
+        "--execution-limit",
+        help="Persist how many executions to retain per project",
+    ),
+    approval_limit: Optional[int] = typer.Option(
+        None,
+        "--approval-limit",
+        help="Persist how many approval suggestions to retain per project",
+    ),
+    decision_limit: Optional[int] = typer.Option(
+        None,
+        "--decision-limit",
+        help="Persist how many decision records to retain per project",
+    ),
+):
+    """Run the Fracture operating loop with memory, planning, execution, and critique."""
+    from fracture.core.operations import run_operating_loop
+
+    console.print(BANNER)
+    result = run_operating_loop(
+        objective=objective,
+        workspace=workspace,
+        project=project,
+        done=done,
+        note=note,
+        execute_recommended=True if execute else None,
+        command_timeout=command_timeout,
+        allow_execute=allow_execute,
+        auto_execute_kinds=auto_execute_kind,
+        approval_strictness=approval_strictness,
+        memory_limit=memory_limit,
+        execution_limit=execution_limit,
+        approval_limit=approval_limit,
+        decision_limit=decision_limit,
+    )
+    _print_operate_summary(result)
+
+    if output:
+        with open(output, "w") as handle:
+            json.dump(result, handle, indent=2)
+        _print_output_saved("Operating snapshot", output)
 
 
 if __name__ == "__main__":

@@ -106,6 +106,39 @@ fracture autopilot \
   --timeout 20
 ```
 
+### `fracture operate`
+
+Run the new project operating loop with persistent memory, task planning, execution state, and critique.
+
+```bash
+fracture operate \
+  --workspace . \
+  --objective "Build Fracture v1 memory + planner + critic" \
+  --note "Start with the smallest usable loop" \
+  --output operate.json
+```
+
+Use `--done T01` to mark a task complete and recalculate the next action. Use `--execute` to run the active task's recommended command with a bounded timeout and store the result in project memory. Fracture derives the recommended command from the task's file hints and the tests it actually finds in the workspace, then restricts execution to allowlisted command prefixes for that task kind. Off-lane commands are blocked and recorded as safe failures. After each execution, Fracture emits an approval gate with a confidence level and the exact `fracture operate --done ...` command it recommends if the task looks ready to close. Fracture persists state under `.fracture/operations/` inside the selected workspace.
+
+Project run policy can also be persisted with:
+
+```bash
+fracture operate \
+  --workspace . \
+  --objective "Build Fracture v1 memory + planner + critic" \
+  --allow-execute \
+  --command-timeout 30 \
+  --auto-execute-kind implementation \
+  --approval-strictness strict \
+  --memory-limit 20 \
+  --execution-limit 10 \
+  --approval-limit 10 \
+  --decision-limit 20
+```
+
+Once stored, later `fracture operate` runs reuse that policy unless you override it explicitly.
+Fracture normalizes invalid policy values back into safe defaults and emits a compact policy summary on every run.
+
 ## Reading The Triage
 
 High-level fields you will see frequently:

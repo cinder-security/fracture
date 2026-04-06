@@ -11,7 +11,7 @@ from fracture.agents.report import Report
 from fracture.cli import app
 from fracture.core.result import AttackResult
 from fracture.core.operations import ExecutionRecord
-from fracture.ui.control_center import get_demo_workspace_path, load_control_center_bundle
+from fracture.ui.control_center import get_demo_workspace_path, load_control_center_bundle, _render_html
 
 
 class CLISmokeTests(unittest.TestCase):
@@ -940,8 +940,24 @@ class CLISmokeTests(unittest.TestCase):
             self.assertEqual(payload["results"]["extract"]["evidence"]["_meta"]["extract_assessment"], "strong_instruction_disclosure")
             self.assertTrue(payload["results"]["extract"]["evidence"]["_meta"]["quoted_disclosure_detected"])
             graph = payload["attack_graph"]
+            trace = payload["trace"]
+            memory_graph = payload["memory_graph"]
+            swarm = payload["swarm"]
             twin = payload["adversarial_twin"]
             self.assertEqual(graph["summary"]["primary_path"][:3], ["target_root", "best_candidate_endpoint", "extract_signal"])
+            self.assertEqual(trace["summary"]["chain_count"], 2)
+            self.assertEqual(trace["summary"]["entry_intent"], "chat_surface")
+            self.assertEqual(trace["summary"]["top_modules"], ["extract", "memory"])
+            self.assertEqual(trace["chains"][0]["module"], "extract")
+            self.assertIn("extract.evidence._meta.extract_assessment", trace["chains"][0]["evidence_paths"])
+            self.assertEqual(memory_graph["summary"]["assessment"], "strong_stateful_memory_signal")
+            self.assertTrue(memory_graph["summary"]["continuity_active"])
+            self.assertTrue(memory_graph["summary"]["recall_detected"])
+            self.assertEqual(memory_graph["summary"]["selected_pair"], "none")
+            self.assertEqual(swarm["summary"]["roles_run"], 2)
+            self.assertEqual(swarm["summary"]["roles_positive"], 2)
+            self.assertEqual(swarm["summary"]["strongest_role"], "disclosure_operator")
+            self.assertEqual(swarm["summary"]["next_move"], "escalate_cross_signal_validation")
             edge_pairs = {
                 (edge["source"], edge["target"], edge["type"])
                 for edge in graph["edges"]
@@ -954,7 +970,389 @@ class CLISmokeTests(unittest.TestCase):
             self.assertEqual(twin["identity"]["best_candidate"], "https://example.test/api/chat/messages")
             self.assertEqual(twin["invocation_profile"]["method_hint"], "POST")
             self.assertEqual(twin["summary"]["recommended_next_step"], "collect_more_surface")
+            self.assertEqual(twin["summary"]["scenario_count"], 3)
+            self.assertEqual(twin["simulation"]["summary"]["scenario_count"], 3)
+            self.assertEqual(twin["simulation"]["summary"]["best_path"], "stateful_memory_escalation")
+            self.assertIn("Trace", result.output)
+            self.assertIn("MemoryGraph", result.output)
+            self.assertIn("Swarm", result.output)
             self.assertIn("Adversarial Twin", result.output)
+
+    def test_attack_command_emits_drift_against_existing_output_snapshot(self):
+        async def fake_run_attack(target, modules, objective=None, execution_hints=None):
+            return {
+                "attacks": {
+                    "extract": AttackResult(
+                        module="extract",
+                        target_url=target.url,
+                        success=True,
+                        confidence=0.74,
+                        evidence={
+                            "_meta": {
+                                "extract_assessment": "strong_instruction_disclosure",
+                                "quoted_disclosure_detected": True,
+                                "disclosure_markers": ["system prompt"],
+                            }
+                        },
+                        notes="extract disclosure fixture",
+                    ),
+                }
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "attack.json"
+            output.write_text(json.dumps({
+                "results": {
+                    "extract": {
+                        "module": "extract",
+                        "target_url": "https://example.test/api/chat/messages",
+                        "success": True,
+                        "confidence": 0.41,
+                        "evidence": {
+                            "_meta": {
+                                "extract_assessment": "partial_instruction_disclosure",
+                            }
+                        },
+                    },
+                },
+                "findings_summary": {
+                    "confirmed": 0,
+                    "probable": 1,
+                    "possible": 0,
+                    "negative": 0,
+                    "top_signals": [],
+                },
+            }))
+            with patch("fracture.cli._run_attack", fake_run_attack):
+                result = self.runner.invoke(
+                    app,
+                    [
+                        "attack",
+                        "--target", "https://example.test/api/chat/messages",
+                        "--module", "extract",
+                        "--output", str(output),
+                    ],
+                )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            payload = json.loads(output.read_text())
+            self.assertTrue(payload["drift"]["summary"]["baseline_present"])
+            self.assertEqual(payload["drift"]["summary"]["changed_modules"], 1)
+            self.assertIn("quoted disclosure detected", payload["drift"]["summary"]["new_top_signals"])
+            self.assertEqual(payload["drift"]["modules"][0]["module"], "extract")
+            self.assertEqual(payload["drift"]["modules"][0]["status"], "escalated")
+            self.assertIn("Drift", result.output)
+
+    def test_attack_command_emits_toolforge_for_tool_surface(self):
+        async def fake_run_attack(target, modules, objective=None, execution_hints=None):
+            return {
+                "attacks": {
+                    "extract": AttackResult(
+                        module="extract",
+                        target_url=target.url,
+                        success=True,
+                        confidence=0.71,
+                        evidence={"_meta": {"extract_assessment": "strong_instruction_disclosure"}},
+                        notes="Extract complete",
+                    ),
+                    "obliteratus": AttackResult(
+                        module="obliteratus",
+                        target_url=target.url,
+                        success=True,
+                        confidence=0.61,
+                        evidence={"_meta": {"best_classification": "policy_override_signal"}},
+                        notes="Obliteratus complete",
+                    ),
+                    "privesc": AttackResult(
+                        module="privesc",
+                        target_url=target.url,
+                        success=True,
+                        confidence=0.54,
+                        evidence={"_meta": {"best_classification": "possible_privilege_escalation"}},
+                        notes="Privesc complete",
+                    ),
+                }
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scan_path = Path(tmpdir) / "scan.json"
+            output = Path(tmpdir) / "attack.json"
+            scan_path.write_text(json.dumps({
+                "target_url": "https://example.test/api/agent/run",
+                "handoff": {
+                    "recommended_target_url": "https://example.test/api/agent/run",
+                    "intent": "tool_or_agent_surface",
+                    "score": 13,
+                    "source_mode": "phantomtwin",
+                    "transport_hint": "websocket",
+                    "method_hint": "POST",
+                    "session_required": False,
+                    "browser_session_likely": False,
+                    "auth_signals": ["authorization"],
+                    "observed_header_names": ["Authorization"],
+                    "observed_cookie_names": [],
+                    "invocation_profile": {
+                        "method_hint": "POST",
+                        "content_type_hint": "application/json",
+                        "accepts_json": True,
+                        "streaming_likely": True,
+                        "websocket_likely": True,
+                        "observed_body_keys": ["message", "tools", "history"],
+                        "observed_query_param_names": ["mode"],
+                    },
+                }
+            }))
+            with patch("fracture.cli._run_attack", fake_run_attack):
+                result = self.runner.invoke(
+                    app,
+                    [
+                        "attack",
+                        "--from-scan", str(scan_path),
+                        "--module", "extract",
+                        "--module", "obliteratus",
+                        "--module", "privesc",
+                        "--output", str(output),
+                    ],
+                )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            payload = json.loads(output.read_text())
+            toolforge = payload["toolforge"]
+            self.assertTrue(toolforge["summary"]["tool_surface_detected"])
+            self.assertEqual(toolforge["summary"]["surface_intent"], "tool_or_agent_surface")
+            self.assertEqual(toolforge["summary"]["strongest_chain"], "prompt_to_tool_override")
+            self.assertEqual(toolforge["summary"]["authority_exposure"], "elevated")
+            self.assertIn("tools", toolforge["summary"]["observed_contract_keys"])
+            self.assertEqual(toolforge["summary"]["recommended_move"], "probe_authority_confusion")
+            self.assertEqual(toolforge["chains"][0]["chain"], "prompt_to_tool_override")
+            self.assertIn("ToolForge", result.output)
+
+    def test_attack_command_emits_governor_for_policy_flip_signals(self):
+        async def fake_run_attack(target, modules, objective=None, execution_hints=None):
+            return {
+                "attacks": {
+                    "extract": AttackResult(
+                        module="extract",
+                        target_url=target.url,
+                        success=True,
+                        confidence=0.72,
+                        evidence={"_meta": {"extract_assessment": "strong_instruction_disclosure"}},
+                    ),
+                    "obliteratus": AttackResult(
+                        module="obliteratus",
+                        target_url=target.url,
+                        success=False,
+                        confidence=0.0,
+                        evidence={"_meta": {"best_classification": "refusal_or_policy_block"}},
+                    ),
+                    "privesc": AttackResult(
+                        module="privesc",
+                        target_url=target.url,
+                        success=True,
+                        confidence=0.51,
+                        evidence={"_meta": {"best_classification": "possible_privilege_escalation"}},
+                    ),
+                }
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "attack.json"
+            with patch("fracture.cli._run_attack", fake_run_attack):
+                result = self.runner.invoke(
+                    app,
+                    [
+                        "attack",
+                        "--target", "https://example.test/api/chat/messages",
+                        "--module", "extract",
+                        "--module", "obliteratus",
+                        "--module", "privesc",
+                        "--output", str(output),
+                    ],
+                )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            payload = json.loads(output.read_text())
+            governor = payload["governor"]
+            self.assertEqual(governor["summary"]["enforcement_posture"], "contradictory")
+            self.assertEqual(governor["summary"]["override_pressure"], 2)
+            self.assertEqual(governor["summary"]["refusal_pressure"], 1)
+            self.assertEqual(governor["summary"]["recommended_move"], "minimize_input_for_policy_flip")
+            self.assertIn("Governor", result.output)
+
+    def test_attack_command_emits_reality_for_demo_world(self):
+        async def fake_run_attack(target, modules, objective=None, execution_hints=None):
+            return {
+                "attacks": {
+                    "extract": AttackResult(
+                        module="extract",
+                        target_url=target.url,
+                        success=True,
+                        confidence=0.72,
+                        evidence={"_meta": {"extract_assessment": "strong_instruction_disclosure"}},
+                    ),
+                }
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scan_path = Path(tmpdir) / "scan.json"
+            output = Path(tmpdir) / "attack.json"
+            scan_path.write_text(json.dumps({
+                "target_url": "https://example.test/api/agent/run",
+                "handoff": {
+                    "recommended_target_url": "https://example.test/api/agent/run",
+                    "intent": "tool_or_agent_surface",
+                    "score": 13,
+                    "method_hint": "POST",
+                    "session_material_present": True,
+                    "session_cookie_count": 1,
+                    "session_cookie_names": ["sessionid"],
+                    "invocation_profile": {
+                        "method_hint": "POST",
+                        "content_type_hint": "application/json",
+                        "accepts_json": True,
+                        "streaming_likely": True,
+                        "websocket_likely": True,
+                        "observed_body_keys": ["message", "tools"],
+                        "observed_query_param_names": ["mode"],
+                    },
+                }
+            }))
+            with patch("fracture.cli._run_attack", fake_run_attack):
+                result = self.runner.invoke(
+                    app,
+                    [
+                        "attack",
+                        "--from-scan", str(scan_path),
+                        "--module", "extract",
+                        "--output", str(output),
+                    ],
+                )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            payload = json.loads(output.read_text())
+            reality = payload["reality"]
+            self.assertEqual(reality["world"]["intent"], "tool_or_agent_surface")
+            self.assertTrue(reality["summary"]["tenant"].startswith("orchestra_"))
+            self.assertEqual(reality["summary"]["identity_count"], 3)
+            self.assertEqual(reality["summary"]["document_count"], 3)
+            self.assertEqual(reality["summary"]["session_count"], 2)
+            self.assertEqual(reality["summary"]["recommended_use"], "high_fidelity_demo_replay")
+            self.assertIn("Reality", result.output)
+
+    def test_attack_command_emits_shadow_for_session_backed_surface(self):
+        async def fake_run_attack(target, modules, objective=None, execution_hints=None):
+            return {
+                "attacks": {
+                    "extract": AttackResult(
+                        module="extract",
+                        target_url=target.url,
+                        success=True,
+                        confidence=0.72,
+                        evidence={"_meta": {"extract_assessment": "strong_instruction_disclosure"}},
+                    ),
+                    "memory": AttackResult(
+                        module="memory",
+                        target_url=target.url,
+                        success=True,
+                        confidence=0.44,
+                        evidence={"_meta": {"memory_assessment": "canary_recall_signal", "canary_recall_detected": True}},
+                    ),
+                }
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scan_path = Path(tmpdir) / "scan.json"
+            output = Path(tmpdir) / "attack.json"
+            scan_path.write_text(json.dumps({
+                "target_url": "https://example.test/api/chat/messages",
+                "handoff": {
+                    "recommended_target_url": "https://example.test/api/chat/messages",
+                    "intent": "chat_surface",
+                    "score": 14,
+                    "session_required": True,
+                    "browser_session_likely": True,
+                    "auth_wall_type": "form_login",
+                    "manual_login_recommended": True,
+                    "session_material_present": True,
+                    "session_cookie_count": 1,
+                    "session_cookie_names": ["sessionid"],
+                    "invocation_profile": {
+                        "method_hint": "POST",
+                        "content_type_hint": "application/json",
+                        "accepts_json": True,
+                        "streaming_likely": False,
+                        "websocket_likely": False,
+                        "observed_body_keys": ["message"],
+                        "observed_query_param_names": ["mode"],
+                    },
+                }
+            }))
+            with patch("fracture.cli._run_attack", fake_run_attack):
+                result = self.runner.invoke(
+                    app,
+                    [
+                        "attack",
+                        "--from-scan", str(scan_path),
+                        "--module", "extract",
+                        "--module", "memory",
+                        "--output", str(output),
+                    ],
+                )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            payload = json.loads(output.read_text())
+            shadow = payload["shadow"]
+            self.assertEqual(shadow["summary"]["replay_readiness"], "high")
+            self.assertEqual(shadow["summary"]["replay_safety"], "mirrored")
+            self.assertEqual(shadow["summary"]["validation_window"], "broad")
+            self.assertEqual(shadow["summary"]["auth_dependency"], "session")
+            self.assertEqual(shadow["summary"]["recommended_move"], "replay_in_shadow_mode")
+            self.assertIn("Shadow", result.output)
+
+    def test_attack_command_emits_boardroom_with_confirmed_findings(self):
+        async def fake_run_attack(target, modules, objective=None, execution_hints=None):
+            return {
+                "attacks": {
+                    "extract": AttackResult(
+                        module="extract",
+                        target_url=target.url,
+                        success=True,
+                        confidence=0.85,
+                        evidence={"_meta": {"extract_assessment": "strong_instruction_disclosure"}},
+                        notes="Extract confirmed",
+                    ),
+                    "memory": AttackResult(
+                        module="memory",
+                        target_url=target.url,
+                        success=True,
+                        confidence=0.60,
+                        evidence={"_meta": {"memory_assessment": "canary_recall_signal", "canary_recall_detected": True}},
+                        notes="Memory recall confirmed",
+                    ),
+                }
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "attack.json"
+            with patch("fracture.cli._run_attack", fake_run_attack):
+                result = self.runner.invoke(
+                    app,
+                    [
+                        "attack",
+                        "--target", "https://example.test/api/chat/messages",
+                        "--module", "extract",
+                        "--module", "memory",
+                        "--output", str(output),
+                    ],
+                )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            payload = json.loads(output.read_text())
+            boardroom = payload["boardroom"]
+            self.assertIn(boardroom["summary"]["risk_posture"], {"boardroom_critical", "boardroom_high", "boardroom_material"})
+            self.assertIn(boardroom["summary"]["blast_radius"], {"cross-surface", "stateful", "localized", "contained"})
+            self.assertIn(boardroom["summary"]["recommended_action"], {"immediate_exec_review", "schedule_fix_validation", "review_regression_window"})
+            self.assertIn("Boardroom", result.output)
 
     def test_attack_command_fails_cleanly_when_scan_has_no_usable_handoff(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1249,10 +1647,144 @@ class UICommandTests(unittest.TestCase):
 
             bundle = load_control_center_bundle(workspace=str(workspace))
 
-        self.assertEqual(bundle["executive"]["top_finding"], "retrieval_poison confirmed with commercial impact")
-        self.assertEqual(bundle["executive"]["recommended_next_step"], "collect_more_surface")
-        self.assertEqual(bundle["executive"]["primary_path"], ["target_root", "report_finding"])
-        self.assertEqual(bundle["executive"]["top_signals"][:2], ["retrieval influence", "primary path confidence"])
+            self.assertEqual(bundle["executive"]["top_finding"], "retrieval_poison confirmed with commercial impact")
+            self.assertEqual(bundle["executive"]["recommended_next_step"], "collect_more_surface")
+            self.assertEqual(bundle["executive"]["primary_path"], ["target_root", "report_finding"])
+            self.assertEqual(bundle["executive"]["top_signals"][:2], ["retrieval influence", "primary path confidence"])
+
+    def test_ui_bundle_prefers_boardroom_summary_when_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "report.json").write_text(json.dumps({
+                "target_url": "https://example.test",
+                "findings_summary": {
+                    "executive_summary": ["fallback executive"],
+                    "top_signals": ["signal-a"],
+                },
+                "boardroom": {
+                    "summary": {
+                        "risk_posture": "boardroom_high",
+                        "top_finding": "extract: confirmed leak with business impact",
+                        "recommended_action": "immediate_exec_review",
+                    },
+                    "operator_brief": {
+                        "primary_path": ["target_root", "best_candidate_endpoint", "report_finding"],
+                        "next_step": "collect_more_surface",
+                    },
+                },
+                "attack_graph": {
+                    "summary": {
+                        "primary_path": ["target_root", "report_finding"],
+                    }
+                },
+                "adversarial_twin": {
+                    "summary": {
+                        "auth_dependency": "session",
+                    }
+                },
+            }))
+            bundle = load_control_center_bundle(workspace=str(workspace))
+            self.assertEqual(bundle["executive"]["top_finding"], "extract: confirmed leak with business impact")
+            self.assertEqual(bundle["executive"]["overall_posture"], "boardroom_high")
+            self.assertEqual(bundle["executive"]["recommended_next_step"], "immediate_exec_review")
+            self.assertEqual(bundle["executive"]["primary_path"], ["target_root", "best_candidate_endpoint", "report_finding"])
+
+    def test_ui_bundle_includes_phase3_demo_blocks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "attack.json").write_text(json.dumps({
+                "toolforge": {"summary": {"strongest_chain": "prompt_to_tool_override", "recommended_move": "probe_authority_confusion"}},
+                "governor": {"summary": {"enforcement_posture": "contradictory", "recommended_move": "minimize_input_for_policy_flip"}},
+                "reality": {"summary": {"tenant": "orchestra_example", "recommended_use": "high_fidelity_demo_replay"}},
+                "shadow": {"summary": {"replay_readiness": "high", "recommended_move": "replay_in_shadow_mode"}},
+            }))
+
+            bundle = load_control_center_bundle(workspace=str(workspace))
+            self.assertEqual(bundle["toolforge"]["summary"]["strongest_chain"], "prompt_to_tool_override")
+            self.assertEqual(bundle["governor"]["summary"]["enforcement_posture"], "contradictory")
+            self.assertEqual(bundle["reality"]["summary"]["tenant"], "orchestra_example")
+            self.assertEqual(bundle["shadow"]["summary"]["replay_readiness"], "high")
+
+    def test_ui_bundle_uses_phase3_fallbacks_when_boardroom_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "report.json").write_text(json.dumps({
+                "target_url": "https://example.test",
+                "findings_summary": {
+                    "top_signals": ["signal-a"],
+                },
+                "attack_graph": {
+                    "summary": {"primary_path": ["target_root", "report_finding"]},
+                },
+                "adversarial_twin": {
+                    "summary": {
+                        "overall_posture": "attackable",
+                        "attackability": "high",
+                        "auth_dependency": "session",
+                        "recommended_next_step": "attack_with_session",
+                    }
+                },
+                "toolforge": {
+                    "summary": {
+                        "strongest_chain": "prompt_to_tool_override",
+                        "recommended_move": "probe_authority_confusion",
+                    }
+                },
+                "governor": {
+                    "summary": {
+                        "strongest_gap": "extract:strong_instruction_disclosure",
+                        "recommended_move": "minimize_input_for_policy_flip",
+                    }
+                },
+                "shadow": {
+                    "summary": {
+                        "recommended_move": "replay_in_shadow_mode",
+                    }
+                },
+                "reality": {
+                    "summary": {
+                        "recommended_use": "high_fidelity_demo_replay",
+                    }
+                },
+            }))
+
+            bundle = load_control_center_bundle(workspace=str(workspace))
+            self.assertEqual(bundle["executive"]["top_finding"], "extract:strong_instruction_disclosure")
+            self.assertEqual(bundle["executive"]["recommended_next_step"], "replay_in_shadow_mode")
+
+    def test_ui_html_renders_phase3_demo_sections(self):
+        bundle = {
+            "overview": {
+                "target": "https://example.test",
+                "best_candidate": "https://example.test/api/agent/run",
+                "best_candidate_intent": "tool_or_agent_surface",
+                "auth_wall_type": "form_login",
+                "auth_wall_confidence": 0.92,
+                "auth_opportunity_score": 9,
+                "session_context": {"session_material_present": True, "session_cookie_count": 1, "session_cookie_names": ["sessionid"]},
+                "attackability": "high",
+                "overall_posture": "attackable",
+                "recommended_next_step": "attack_with_session",
+            },
+            "attack_graph": {"summary": {"primary_path": ["target_root", "best_candidate_endpoint"]}},
+            "adversarial_twin": {"summary": {"overall_posture": "attackable", "attackability": "high", "auth_dependency": "session", "recommended_next_step": "attack_with_session", "simulated_best_path": "session_backed_probe", "scenario_count": 3}},
+            "toolforge": {"summary": {"strongest_chain": "prompt_to_tool_override", "recommended_move": "probe_authority_confusion"}},
+            "governor": {"summary": {"enforcement_posture": "contradictory", "recommended_move": "minimize_input_for_policy_flip"}},
+            "reality": {"summary": {"tenant": "orchestra_example", "recommended_use": "high_fidelity_demo_replay"}},
+            "shadow": {"summary": {"replay_readiness": "high", "recommended_move": "replay_in_shadow_mode"}},
+            "findings": {"findings_summary": {}, "executive_summary": [], "highlights": [], "module_assessment": [], "report_rationale": [], "key_signals": [], "operational_limitations": []},
+            "executive": {"top_finding": "prompt_to_tool_override", "top_signals": [], "overall_posture": "attackable", "attackability": "high", "auth_wall": "form_login", "auth_dependency": "session", "recommended_next_step": "replay_in_shadow_mode", "operational_limitations": [], "primary_path": ["target_root", "best_candidate_endpoint"]},
+            "artifacts": {},
+            "artifacts_payload": {},
+            "demo_workspace": False,
+        }
+        html = _render_html(bundle)
+        self.assertIn("ToolForge", html)
+        self.assertIn("Governor", html)
+        self.assertIn("Reality", html)
+        self.assertIn("Shadow", html)
+        self.assertIn("Simulated Best Path", html)
+        self.assertIn("Scenario Count", html)
 
     def test_operate_command_creates_persistent_operating_state(self):
         with tempfile.TemporaryDirectory() as tmpdir:

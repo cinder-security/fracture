@@ -37,6 +37,8 @@ def export_report_docx(report, output_path: str) -> None:
     report_data = report.to_dict() if hasattr(report, "to_dict") else dict(report)
     findings = report_data.get("findings_summary", {}) or {}
     results = report_data.get("results", {}) or {}
+    boardroom = report_data.get("boardroom", {}) or {}
+    boardroom_summary = boardroom.get("summary", {}) if isinstance(boardroom.get("summary", {}), dict) else {}
     now = datetime.now(UTC).isoformat()
 
     body = []
@@ -61,6 +63,9 @@ def export_report_docx(report, output_path: str) -> None:
     body.append(_paragraph(f"Probable: {findings.get('probable', 0)}"))
     body.append(_paragraph(f"Possible: {findings.get('possible', 0)}"))
     body.append(_paragraph(f"Negative: {findings.get('negative', 0)}"))
+    body.append(_paragraph(f"Boardroom posture: {boardroom_summary.get('risk_posture', 'unknown')}"))
+    body.append(_paragraph(f"Blast radius: {boardroom_summary.get('blast_radius', 'unknown')}"))
+    body.append(_paragraph(f"Recommended action: {boardroom_summary.get('recommended_action', 'none')}"))
     for summary_line in list(findings.get("executive_summary", []) or [])[:3]:
         body.append(_paragraph(f"Executive signal: {summary_line}"))
     top_signals = list(findings.get("top_signals", []) or [])

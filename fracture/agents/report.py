@@ -34,6 +34,15 @@ class Report:
     findings_summary: dict = field(default_factory=dict)
     results: dict = field(default_factory=dict)
     attack_graph: dict = field(default_factory=dict)
+    trace: dict = field(default_factory=dict)
+    memory_graph: dict = field(default_factory=dict)
+    swarm: dict = field(default_factory=dict)
+    toolforge: dict = field(default_factory=dict)
+    governor: dict = field(default_factory=dict)
+    reality: dict = field(default_factory=dict)
+    shadow: dict = field(default_factory=dict)
+    drift: dict = field(default_factory=dict)
+    boardroom: dict = field(default_factory=dict)
     adversarial_twin: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -60,6 +69,7 @@ class ReportAgent(BaseAgent):
         plan: dict = None,
         attack_results: dict[str, AttackResult] = None,
         output_path: Optional[str] = None,
+        baseline_report: dict | None = None,
         **kwargs,
     ) -> Report:
         plan = plan or {}
@@ -83,6 +93,38 @@ class ReportAgent(BaseAgent):
             report_results=report_results,
             findings_summary=findings_summary,
         )
+        trace = self.build_trace(
+            fingerprint=fingerprint,
+            plan=plan,
+            attack_results=attack_results,
+            report_results=report_results,
+            findings_summary=findings_summary,
+        )
+        memory_graph = self.build_memory_graph(
+            attack_results=attack_results,
+            report_results=report_results,
+        )
+        swarm = self.build_swarm(
+            attack_results=attack_results,
+            report_results=report_results,
+            findings_summary=findings_summary,
+        )
+        toolforge = self.build_toolforge(
+            fingerprint=fingerprint,
+            plan=plan,
+            attack_results=attack_results,
+            report_results=report_results,
+        )
+        drift = self.build_drift(
+            report_results=report_results,
+            findings_summary=findings_summary,
+            baseline_report=baseline_report,
+        )
+        governor = self.build_governor(
+            report_results=report_results,
+            trace=trace,
+            drift=drift,
+        )
         adversarial_twin = self.build_adversarial_twin(
             fingerprint=fingerprint,
             plan=plan,
@@ -90,6 +132,30 @@ class ReportAgent(BaseAgent):
             report_results=report_results,
             findings_summary=findings_summary,
             attack_graph=attack_graph,
+        )
+        reality = self.build_reality(
+            fingerprint=fingerprint,
+            plan=plan,
+            report_results=report_results,
+            attack_graph=attack_graph,
+            adversarial_twin=adversarial_twin,
+        )
+        shadow = self.build_shadow(
+            fingerprint=fingerprint,
+            plan=plan,
+            report_results=report_results,
+            adversarial_twin=adversarial_twin,
+            handoff=self._extract_surface_details(fingerprint).get("handoff", {}) if fingerprint is not None else None,
+        )
+        boardroom = self.build_boardroom(
+            findings_summary=findings_summary,
+            report_results=report_results,
+            attack_graph=attack_graph,
+            trace=trace,
+            memory_graph=memory_graph,
+            swarm=swarm,
+            drift=drift,
+            adversarial_twin=adversarial_twin,
         )
 
         report = Report(
@@ -104,6 +170,15 @@ class ReportAgent(BaseAgent):
             findings_summary=findings_summary,
             results=report_results,
             attack_graph=attack_graph,
+            trace=trace,
+            memory_graph=memory_graph,
+            swarm=swarm,
+            toolforge=toolforge,
+            governor=governor,
+            reality=reality,
+            shadow=shadow,
+            drift=drift,
+            boardroom=boardroom,
             adversarial_twin=adversarial_twin,
         )
 
@@ -114,6 +189,882 @@ class ReportAgent(BaseAgent):
             self.console.print(f"\n[dim]Results saved to {output_path}[/dim]")
 
         return report
+
+    def build_boardroom(
+        self,
+        *,
+        findings_summary: dict | None = None,
+        report_results: dict | None = None,
+        attack_graph: dict | None = None,
+        trace: dict | None = None,
+        memory_graph: dict | None = None,
+        swarm: dict | None = None,
+        drift: dict | None = None,
+        adversarial_twin: dict | None = None,
+    ) -> dict:
+        findings_summary = findings_summary or {}
+        report_results = report_results or {}
+        attack_graph = attack_graph or {}
+        trace = trace or {}
+        memory_graph = memory_graph or {}
+        swarm = swarm or {}
+        drift = drift or {}
+        adversarial_twin = adversarial_twin or {}
+
+        graph_summary = attack_graph.get("summary", {}) if isinstance(attack_graph.get("summary", {}), dict) else {}
+        trace_summary = trace.get("summary", {}) if isinstance(trace.get("summary", {}), dict) else {}
+        memory_graph_summary = memory_graph.get("summary", {}) if isinstance(memory_graph.get("summary", {}), dict) else {}
+        swarm_summary = swarm.get("summary", {}) if isinstance(swarm.get("summary", {}), dict) else {}
+        drift_summary = drift.get("summary", {}) if isinstance(drift.get("summary", {}), dict) else {}
+        twin_summary = adversarial_twin.get("summary", {}) if isinstance(adversarial_twin.get("summary", {}), dict) else {}
+
+        confirmed = int(findings_summary.get("confirmed", 0) or 0)
+        probable = int(findings_summary.get("probable", 0) or 0)
+        possible = int(findings_summary.get("possible", 0) or 0)
+        if confirmed >= 1:
+            risk_posture = "boardroom_critical"
+        elif probable >= 2:
+            risk_posture = "boardroom_high"
+        elif probable >= 1 or possible >= 2:
+            risk_posture = "boardroom_material"
+        else:
+            risk_posture = "boardroom_watch"
+
+        blast_radius = "contained"
+        if confirmed >= 1 and trace_summary.get("chain_count", 0) >= 2:
+            blast_radius = "cross-surface"
+        elif memory_graph_summary.get("recall_detected") and swarm_summary.get("roles_positive", 0) >= 2:
+            blast_radius = "stateful"
+        elif probable >= 1:
+            blast_radius = "localized"
+
+        top_finding = (
+            list(findings_summary.get("executive_summary", []) or [])[:1]
+            or list(findings_summary.get("highlights", []) or [])[:1]
+        )
+        top_finding_text = top_finding[0] if top_finding else "No decisive top finding yet."
+        recommended_action = "schedule_fix_validation"
+        if risk_posture in {"boardroom_critical", "boardroom_high"}:
+            recommended_action = "immediate_exec_review"
+        elif drift_summary.get("changed_modules", 0) > 0:
+            recommended_action = "review_regression_window"
+
+        return self._compact(
+            {
+                "summary": {
+                    "risk_posture": risk_posture,
+                    "blast_radius": blast_radius,
+                    "top_finding": top_finding_text,
+                    "recommended_action": recommended_action,
+                },
+                "commercial_impact": {
+                    "customer_story": top_finding_text,
+                    "signal_density": len(list(findings_summary.get("top_signals", []) or [])),
+                    "cross_signal_consensus": swarm_summary.get("roles_positive", 0),
+                    "regression_pressure": drift_summary.get("changed_modules", 0),
+                },
+                "operator_brief": {
+                    "primary_path": list(graph_summary.get("primary_path", []) or [])[:6],
+                    "top_modules": list(trace_summary.get("top_modules", []) or [])[:3],
+                    "memory_assessment": memory_graph_summary.get("assessment", "none"),
+                    "strongest_role": swarm_summary.get("strongest_role", "none"),
+                    "drift_signals": list(drift_summary.get("new_top_signals", []) or [])[:4],
+                    "next_step": twin_summary.get("recommended_next_step", "collect_more_surface"),
+                },
+            }
+        )
+
+    def build_drift(
+        self,
+        *,
+        report_results: dict | None = None,
+        findings_summary: dict | None = None,
+        baseline_report: dict | None = None,
+    ) -> dict:
+        report_results = report_results or {}
+        findings_summary = findings_summary or {}
+        baseline_report = baseline_report if isinstance(baseline_report, dict) else {}
+        baseline_results_raw = baseline_report.get("results", {}) if isinstance(baseline_report.get("results", {}), dict) else {}
+        baseline_findings = baseline_report.get("findings_summary", {}) if isinstance(baseline_report.get("findings_summary", {}), dict) else {}
+        if not baseline_results_raw and not baseline_findings:
+            return {
+                "summary": {
+                    "baseline_present": False,
+                    "changed_modules": 0,
+                    "new_top_signals": [],
+                    "dropped_top_signals": [],
+                }
+            }
+
+        baseline_results = {
+            module_name: self._normalize_baseline_result_entry(module_name, payload)
+            for module_name, payload in baseline_results_raw.items()
+        }
+
+        module_changes: list[dict] = []
+        all_modules = sorted(set(report_results) | set(baseline_results))
+        for module_name in all_modules:
+            current = report_results.get(module_name, {}) if isinstance(report_results.get(module_name, {}), dict) else {}
+            previous = baseline_results.get(module_name, {}) if isinstance(baseline_results.get(module_name, {}), dict) else {}
+            current_assessment = str(current.get("assessment", "missing") or "missing")
+            previous_assessment = str(previous.get("assessment", "missing") or "missing")
+            current_confidence = float(current.get("confidence", 0.0) or 0.0)
+            previous_confidence = float(previous.get("confidence", 0.0) or 0.0)
+            confidence_delta = round(current_confidence - previous_confidence, 3)
+
+            if previous_assessment == "missing":
+                status = "new_module"
+            elif current_assessment == "missing":
+                status = "removed_module"
+            elif self._assessment_rank(current_assessment) < self._assessment_rank(previous_assessment):
+                status = "escalated"
+            elif self._assessment_rank(current_assessment) > self._assessment_rank(previous_assessment):
+                status = "regressed"
+            elif confidence_delta > 0.05:
+                status = "stronger"
+            elif confidence_delta < -0.05:
+                status = "weaker"
+            else:
+                status = "stable"
+
+            if status != "stable":
+                module_changes.append(
+                    {
+                        "module": module_name,
+                        "status": status,
+                        "assessment_before": previous_assessment,
+                        "assessment_after": current_assessment,
+                        "confidence_delta": confidence_delta,
+                    }
+                )
+
+        current_signals = list(findings_summary.get("top_signals", []) or [])
+        previous_signals = list(baseline_findings.get("top_signals", []) or [])
+        new_top_signals = [signal for signal in current_signals if signal not in previous_signals][:4]
+        dropped_top_signals = [signal for signal in previous_signals if signal not in current_signals][:4]
+
+        findings_delta = {
+            key: int(findings_summary.get(key, 0) or 0) - int(baseline_findings.get(key, 0) or 0)
+            for key in ["confirmed", "probable", "possible", "negative"]
+        }
+        return self._compact(
+            {
+                "modules": module_changes,
+                "summary": {
+                    "baseline_present": True,
+                    "changed_modules": len(module_changes),
+                    "findings_delta": findings_delta,
+                    "new_top_signals": new_top_signals,
+                    "dropped_top_signals": dropped_top_signals,
+                },
+            }
+        )
+
+    def build_toolforge(
+        self,
+        *,
+        fingerprint: AttackResult = None,
+        plan: dict | None = None,
+        attack_results: dict[str, AttackResult] | None = None,
+        report_results: dict | None = None,
+        handoff: dict | None = None,
+        session_context: dict | None = None,
+        execution_hints: dict | None = None,
+    ) -> dict:
+        plan = plan or {}
+        attack_results = attack_results or {}
+        report_results = report_results or {
+            key: self._build_result_entry(key, value)
+            for key, value in attack_results.items()
+        }
+        surface_details = self._extract_surface_details(fingerprint)
+        handoff = handoff or (surface_details.get("handoff", {}) if isinstance(surface_details, dict) else {}) or {}
+        session_context = session_context or self._extract_session_context(handoff)
+        execution_hints = execution_hints or self._extract_execution_hints(handoff)
+
+        best_intent = str(
+            (handoff.get("intent") if isinstance(handoff, dict) else "")
+            or (surface_details.get("best_candidate_intent") if isinstance(surface_details, dict) else "")
+            or "unknown_surface"
+        )
+        auth_signals = list(handoff.get("auth_signals", []) or []) if isinstance(handoff, dict) else []
+        observed_body_keys = list(execution_hints.get("observed_body_keys", []) or [])
+        observed_query_keys = list(execution_hints.get("observed_query_param_names", []) or [])
+        positive_modules = [
+            module_name
+            for module_name, entry in report_results.items()
+            if isinstance(entry, dict) and str(entry.get("assessment", "negative") or "negative") in {"confirmed", "probable", "possible"}
+        ]
+        specialist_modules = [
+            module_name
+            for module_name in ["extract", "obliteratus", "privesc", "ssrf", "retrieval_poison", "hpm"]
+            if module_name in positive_modules
+        ]
+        has_tool_surface = bool(
+            best_intent == "tool_or_agent_surface"
+            or execution_hints.get("websocket_likely")
+            or execution_hints.get("streaming_likely")
+            or any(key in {"tool", "tools", "action", "agent", "messages", "history"} for key in observed_body_keys)
+        )
+        authority_exposure = "none"
+        if "privesc" in positive_modules or any(signal in {"authorization", "cookie", "csrf"} for signal in auth_signals):
+            authority_exposure = "elevated"
+        elif session_context.get("session_material_present") or auth_signals:
+            authority_exposure = "session_backed"
+
+        chains: list[dict] = []
+
+        def add_chain(name: str, modules: list[str], outcome: str, confidence_band: str, requirements: list[str]) -> None:
+            chain_modules = [module for module in modules if module in report_results]
+            if not chain_modules:
+                return
+            chains.append(
+                self._compact(
+                    {
+                        "chain": name,
+                        "modules": chain_modules,
+                        "outcome": outcome,
+                        "confidence_band": confidence_band,
+                        "requirements": requirements,
+                    }
+                )
+            )
+
+        if has_tool_surface:
+            add_chain(
+                "prompt_to_tool_override",
+                ["extract", "obliteratus", "privesc"],
+                "tool_contract_confusion",
+                "high" if {"extract", "obliteratus"} & set(positive_modules) else "medium",
+                ["agentic surface", "prompt-controlled tool invocation"],
+            )
+            add_chain(
+                "tool_to_network_pivot",
+                ["ssrf", "privesc", "extract"],
+                "network_reachability_via_tooling",
+                "medium" if "ssrf" in positive_modules else "low",
+                ["fetch-capable tool", "reachable outbound path"],
+            )
+            add_chain(
+                "retrieval_to_action_chain",
+                ["retrieval_poison", "hpm", "extract"],
+                "retrieval_seeded_tool_behavior",
+                "medium" if "retrieval_poison" in positive_modules else "low",
+                ["retrieval-connected surface", "tool-using planner"],
+            )
+
+        if not chains and specialist_modules:
+            add_chain(
+                "surface_probe_chain",
+                specialist_modules[:3],
+                "specialist_modules_present_without_clear_tool_contract",
+                "low",
+                ["additional surface confirmation"],
+            )
+
+        confidence_rank = {"high": 0, "medium": 1, "low": 2}
+        chains.sort(
+            key=lambda item: (
+                confidence_rank.get(str(item.get("confidence_band", "low") or "low"), 2),
+                -len(list(item.get("modules", []) or [])),
+                str(item.get("chain", "")),
+            )
+        )
+        strongest_chain = chains[0]["chain"] if chains else "none"
+        recommended_move = "confirm_tool_contract"
+        if strongest_chain == "prompt_to_tool_override":
+            recommended_move = "probe_authority_confusion"
+        elif strongest_chain == "tool_to_network_pivot":
+            recommended_move = "validate_outbound_fetch_controls"
+        elif strongest_chain == "retrieval_to_action_chain":
+            recommended_move = "seed_retrieval_then_replay"
+
+        return self._compact(
+            {
+                "chains": chains,
+                "summary": {
+                    "tool_surface_detected": has_tool_surface,
+                    "surface_intent": best_intent,
+                    "chain_count": len(chains),
+                    "strongest_chain": strongest_chain,
+                    "authority_exposure": authority_exposure,
+                    "observed_contract_keys": _dedupe(observed_body_keys + observed_query_keys)[:6],
+                    "specialist_modules": specialist_modules[:5],
+                    "recommended_move": recommended_move,
+                },
+            }
+        )
+
+    def build_governor(
+        self,
+        *,
+        report_results: dict | None = None,
+        trace: dict | None = None,
+        drift: dict | None = None,
+    ) -> dict:
+        report_results = report_results or {}
+        trace = trace or {}
+        drift = drift or {}
+        trace_summary = trace.get("summary", {}) if isinstance(trace.get("summary", {}), dict) else {}
+        drift_summary = drift.get("summary", {}) if isinstance(drift.get("summary", {}), dict) else {}
+
+        override_signals: list[dict] = []
+        refusal_signals: list[dict] = []
+        contradictory_modules: list[str] = []
+
+        override_markers = {
+            "strong_instruction_disclosure",
+            "stateful_disclosure_signal",
+            "likely_bypass_or_override",
+            "possible_bypass_or_override",
+            "policy_override_signal",
+            "possible_privilege_escalation",
+            "likely_leak",
+        }
+        refusal_markers = {
+            "no_disclosure_signal",
+            "target_transport_error",
+            "refusal_or_policy_block",
+            "policy_or_refusal",
+            "policy_explanation",
+            "refusal",
+            "no_effect_or_resilient_behavior",
+        }
+
+        for module_name, entry in report_results.items():
+            if not isinstance(entry, dict):
+                continue
+            module_assessment = str(entry.get("module_assessment", "unknown") or "unknown").strip().lower()
+            assessment = str(entry.get("assessment", "negative") or "negative").strip().lower()
+            signal = {
+                "module": module_name,
+                "module_assessment": module_assessment,
+                "assessment": assessment,
+                "confidence": float(entry.get("confidence", 0.0) or 0.0),
+            }
+            if module_assessment in override_markers or assessment == "confirmed":
+                override_signals.append(signal)
+            if module_assessment in refusal_markers:
+                refusal_signals.append(signal)
+            if module_assessment in override_markers and module_assessment in refusal_markers:
+                contradictory_modules.append(module_name)
+
+        contradiction_count = 0
+        if override_signals and refusal_signals:
+            contradiction_count = len({item["module"] for item in override_signals} | {item["module"] for item in refusal_signals})
+        contradiction_count += len(_dedupe(contradictory_modules))
+
+        if override_signals and refusal_signals:
+            enforcement_posture = "contradictory"
+        elif len(override_signals) >= 2:
+            enforcement_posture = "porous"
+        elif refusal_signals and not override_signals:
+            enforcement_posture = "resilient"
+        else:
+            enforcement_posture = "mixed"
+
+        strongest_gap = "none"
+        if override_signals:
+            strongest = sorted(
+                override_signals,
+                key=lambda item: (
+                    self._assessment_rank(item.get("assessment", "negative")),
+                    -float(item.get("confidence", 0.0) or 0.0),
+                ),
+            )[0]
+            strongest_gap = f"{strongest['module']}:{strongest['module_assessment']}"
+
+        recommended_move = "collect_policy_flip_evidence"
+        if enforcement_posture == "contradictory":
+            recommended_move = "minimize_input_for_policy_flip"
+        elif enforcement_posture == "porous":
+            recommended_move = "escalate_override_chain"
+        elif enforcement_posture == "resilient":
+            recommended_move = "probe_boundary_conditions"
+
+        return self._compact(
+            {
+                "override_signals": override_signals[:5],
+                "refusal_signals": refusal_signals[:5],
+                "summary": {
+                    "enforcement_posture": enforcement_posture,
+                    "override_pressure": len(override_signals),
+                    "refusal_pressure": len(refusal_signals),
+                    "contradiction_count": contradiction_count,
+                    "strongest_gap": strongest_gap,
+                    "trace_modules": list(trace_summary.get("top_modules", []) or [])[:4],
+                    "decision_drift": int(drift_summary.get("changed_modules", 0) or 0),
+                    "recommended_move": recommended_move,
+                },
+            }
+        )
+
+    def build_reality(
+        self,
+        *,
+        fingerprint: AttackResult = None,
+        plan: dict | None = None,
+        report_results: dict | None = None,
+        attack_graph: dict | None = None,
+        adversarial_twin: dict | None = None,
+    ) -> dict:
+        plan = plan or {}
+        report_results = report_results or {}
+        attack_graph = attack_graph or {}
+        adversarial_twin = adversarial_twin or {}
+        surface_details = self._extract_surface_details(fingerprint)
+        graph_summary = attack_graph.get("summary", {}) if isinstance(attack_graph.get("summary", {}), dict) else {}
+        twin_identity = adversarial_twin.get("identity", {}) if isinstance(adversarial_twin.get("identity", {}), dict) else {}
+        twin_session = adversarial_twin.get("session_profile", {}) if isinstance(adversarial_twin.get("session_profile", {}), dict) else {}
+        twin_summary = adversarial_twin.get("summary", {}) if isinstance(adversarial_twin.get("summary", {}), dict) else {}
+
+        best_candidate = str(
+            twin_identity.get("best_candidate")
+            or surface_details.get("best_candidate")
+            or self.target.url
+        )
+        intent = str(
+            twin_identity.get("best_candidate_intent")
+            or surface_details.get("best_candidate_intent")
+            or "unknown_surface"
+        )
+        hostname = best_candidate.split("://", 1)[-1].split("/", 1)[0] or "example.test"
+        host_label = hostname.split(".", 1)[0].replace("-", "_") or "target"
+        session_present = bool(twin_session.get("session_material_present"))
+
+        scenario_map = {
+            "chat_surface": ("northstar", "support_orchestrator", "conversation_thread"),
+            "tool_or_agent_surface": ("orchestra", "workflow_controller", "tool_contract"),
+            "retrieval_surface": ("archive", "knowledge_curator", "indexed_document"),
+            "memory_surface": ("continuum", "session_keeper", "memory_journal"),
+        }
+        tenant_seed, persona_seed, document_seed = scenario_map.get(intent, ("horizon", "platform_operator", "operator_note"))
+        tenant_name = f"{tenant_seed}_{host_label}"
+        synthetic_identities = [
+            {
+                "identity": f"{persona_seed}_admin",
+                "role": "tenant_admin",
+                "access_shape": "session_backed" if session_present else "prompt_only",
+            },
+            {
+                "identity": f"{persona_seed}_analyst",
+                "role": "workflow_analyst",
+                "access_shape": "chat_surface",
+            },
+            {
+                "identity": f"{persona_seed}_automation",
+                "role": "agent_runtime",
+                "access_shape": intent,
+            },
+        ]
+        synthetic_documents = [
+            {
+                "document": f"{tenant_name}_{document_seed}_runbook.md",
+                "kind": "runbook",
+                "contains": ["instructions", "handoff", "control markers"],
+            },
+            {
+                "document": f"{tenant_name}_incident_memory.json",
+                "kind": "memory_log",
+                "contains": ["canary", "session continuity", "operator notes"],
+            },
+            {
+                "document": f"{tenant_name}_tool_contract.yaml",
+                "kind": "tool_contract",
+                "contains": ["actions", "authority scope", "output schema"],
+            },
+        ]
+        synthetic_sessions = [
+            {
+                "session": "captured_operator_session" if session_present else "synthetic_browser_session",
+                "state": "warm" if session_present else "cold",
+                "cookie_count": int(twin_session.get("session_cookie_count", 0) or 0),
+            },
+            {
+                "session": "tenant_admin_replay",
+                "state": "primed" if twin_summary.get("attackability") in {"medium", "high"} else "standby",
+                "cookie_count": 1 if session_present else 0,
+            },
+        ]
+
+        realism_score = 5
+        if twin_summary.get("attackability") == "high":
+            realism_score += 2
+        if session_present:
+            realism_score += 2
+        if graph_summary.get("node_count", 0) >= 5:
+            realism_score += 1
+
+        return self._compact(
+            {
+                "world": {
+                    "tenant": tenant_name,
+                    "intent": intent,
+                    "anchor_target": best_candidate,
+                    "realism_score": min(realism_score, 10),
+                },
+                "synthetic_identities": synthetic_identities,
+                "synthetic_documents": synthetic_documents,
+                "synthetic_sessions": synthetic_sessions,
+                "summary": {
+                    "tenant": tenant_name,
+                    "identity_count": len(synthetic_identities),
+                    "document_count": len(synthetic_documents),
+                    "session_count": len(synthetic_sessions),
+                    "scenario_label": f"{intent}_demo_world",
+                    "recommended_use": "high_fidelity_demo_replay" if twin_summary.get("attackability") in {"medium", "high"} else "artifact_enrichment",
+                },
+            }
+        )
+
+    def build_shadow(
+        self,
+        *,
+        fingerprint: AttackResult = None,
+        plan: dict | None = None,
+        report_results: dict | None = None,
+        adversarial_twin: dict | None = None,
+        handoff: dict | None = None,
+        session_context: dict | None = None,
+        execution_hints: dict | None = None,
+    ) -> dict:
+        plan = plan or {}
+        report_results = report_results or {}
+        adversarial_twin = adversarial_twin or {}
+        surface_details = self._extract_surface_details(fingerprint)
+        handoff = handoff or (surface_details.get("handoff", {}) if isinstance(surface_details.get("handoff", {}), dict) else {}) or {}
+        twin_summary = adversarial_twin.get("summary", {}) if isinstance(adversarial_twin.get("summary", {}), dict) else {}
+        auth_profile = adversarial_twin.get("auth_profile", {}) if isinstance(adversarial_twin.get("auth_profile", {}), dict) else {}
+        session_profile = adversarial_twin.get("session_profile", {}) if isinstance(adversarial_twin.get("session_profile", {}), dict) else {}
+        invocation_profile = adversarial_twin.get("invocation_profile", {}) if isinstance(adversarial_twin.get("invocation_profile", {}), dict) else {}
+        session_context = session_context or self._extract_session_context(handoff)
+        execution_hints = execution_hints or self._extract_execution_hints(handoff)
+
+        session_required = bool(handoff.get("session_required", surface_details.get("session_required", False)))
+        browser_session_likely = bool(handoff.get("browser_session_likely", surface_details.get("browser_session_likely", False)))
+        auth_wall_type = str(auth_profile.get("auth_wall_type", handoff.get("auth_wall_type", "no_auth_wall")) or "no_auth_wall")
+        session_present = bool(
+            session_context.get("session_material_present")
+            or session_profile.get("session_material_present", handoff.get("session_material_present", False))
+        )
+        transport_live = bool(execution_hints.get("streaming_likely")) or bool(execution_hints.get("websocket_likely")) or bool(invocation_profile.get("streaming_likely")) or bool(invocation_profile.get("websocket_likely"))
+        attackability = str(twin_summary.get("attackability", "low") or "low")
+        positive_count = sum(
+            1
+            for entry in report_results.values()
+            if isinstance(entry, dict) and str(entry.get("assessment", "negative") or "negative") in {"confirmed", "probable"}
+        )
+
+        replay_readiness = "low"
+        if session_present:
+            replay_readiness = "high"
+        elif attackability in {"medium", "high"} and not session_required:
+            replay_readiness = "medium"
+
+        replay_safety = "guarded"
+        if auth_wall_type == "no_auth_wall" and not transport_live:
+            replay_safety = "safe"
+        elif session_present or browser_session_likely:
+            replay_safety = "mirrored"
+
+        validation_window = "narrow"
+        if replay_readiness == "high" and positive_count >= 2:
+            validation_window = "broad"
+        elif replay_readiness == "medium":
+            validation_window = "focused"
+
+        recommended_move = "collect_shadow_artifacts"
+        if replay_readiness == "high":
+            recommended_move = "replay_in_shadow_mode"
+        elif replay_safety == "mirrored":
+            recommended_move = "mirror_session_then_replay"
+        elif transport_live:
+            recommended_move = "capture_live_transport_shape"
+
+        return self._compact(
+            {
+                "profile": {
+                    "replay_readiness": replay_readiness,
+                    "replay_safety": replay_safety,
+                    "validation_window": validation_window,
+                    "transport_live": transport_live,
+                    "auth_wall_type": auth_wall_type,
+                    "session_present": session_present,
+                },
+                "constraints": _dedupe(
+                    list(plan.get("operational_limitations", []) or [])
+                    + list(plan.get("surface_constraints", []) or [])
+                    + (["session required"] if session_required else [])
+                    + (["browser session likely"] if browser_session_likely else [])
+                )[:4],
+                "summary": {
+                    "replay_readiness": replay_readiness,
+                    "replay_safety": replay_safety,
+                    "validation_window": validation_window,
+                    "auth_dependency": "session" if session_required or session_present else "none",
+                    "positive_modules": positive_count,
+                    "recommended_move": recommended_move,
+                },
+            }
+        )
+
+    def build_swarm(
+        self,
+        *,
+        attack_results: dict[str, AttackResult] | None = None,
+        report_results: dict | None = None,
+        findings_summary: dict | None = None,
+    ) -> dict:
+        attack_results = attack_results or {}
+        report_results = report_results or {
+            key: self._build_result_entry(key, value)
+            for key, value in attack_results.items()
+        }
+        findings_summary = findings_summary or self._build_findings_summary(
+            attack_results,
+            report_results=report_results,
+        )
+        role_map = {
+            "extract": "disclosure_operator",
+            "memory": "persistence_operator",
+            "hpm": "prompt_operator",
+            "retrieval_poison": "retrieval_operator",
+            "ssrf": "network_operator",
+            "obliteratus": "policy_operator",
+            "privesc": "authority_operator",
+        }
+        role_runs: list[dict] = []
+        positive_roles: list[str] = []
+        convergent_signals: list[str] = []
+        for module_name, entry in report_results.items():
+            if not isinstance(entry, dict):
+                continue
+            assessment = str(entry.get("assessment") or "negative").strip().lower()
+            role_name = role_map.get(module_name, f"{module_name}_operator")
+            key_signals = list(entry.get("key_signals", []) or [])
+            if assessment in {"confirmed", "probable", "possible"}:
+                positive_roles.append(role_name)
+                convergent_signals.extend(key_signals[:2])
+            role_runs.append(
+                self._compact(
+                    {
+                        "module": module_name,
+                        "role": role_name,
+                        "assessment": assessment,
+                        "confidence": float(entry.get("confidence", 0.0) or 0.0),
+                        "module_assessment": entry.get("module_assessment"),
+                        "signals": key_signals[:3],
+                    }
+                )
+            )
+        role_runs.sort(
+            key=lambda item: (
+                self._assessment_rank(item.get("assessment", "negative")),
+                -float(item.get("confidence", 0.0) or 0.0),
+                str(item.get("module", "")),
+            )
+        )
+        strongest = role_runs[0] if role_runs else {}
+        return self._compact(
+            {
+                "roles": role_runs,
+                "summary": {
+                    "roles_run": len(role_runs),
+                    "roles_positive": len(positive_roles),
+                    "strongest_role": strongest.get("role", "none"),
+                    "strongest_module": strongest.get("module", "none"),
+                    "consensus_signals": _dedupe(convergent_signals)[:5],
+                    "executive_summary": list(findings_summary.get("executive_summary", []) or [])[:2],
+                    "next_move": "escalate_cross_signal_validation" if len(positive_roles) >= 2 else "probe_next_specialist_role",
+                },
+            }
+        )
+
+    def build_memory_graph(
+        self,
+        *,
+        attack_results: dict[str, AttackResult] | None = None,
+        report_results: dict | None = None,
+    ) -> dict:
+        attack_results = attack_results or {}
+        report_results = report_results or {
+            key: self._build_result_entry(key, value)
+            for key, value in attack_results.items()
+        }
+        memory_entry = report_results.get("memory", {}) if isinstance(report_results.get("memory", {}), dict) else {}
+        memory_meta = memory_entry.get("evidence_meta", {}) if isinstance(memory_entry.get("evidence_meta", {}), dict) else {}
+        if not memory_entry and not memory_meta:
+            return {}
+
+        nodes: list[dict] = []
+        edges: list[dict] = []
+
+        def add_node(node_id: str, kind: str, label: str, **attrs):
+            payload = {"id": node_id, "kind": kind, "label": label}
+            useful_attrs = {key: value for key, value in attrs.items() if value not in (None, "", [], {}, False)}
+            if useful_attrs:
+                payload["attrs"] = useful_attrs
+            if not any(existing.get("id") == node_id for existing in nodes):
+                nodes.append(payload)
+
+        def add_edge(source: str, target: str, edge_type: str, **attrs):
+            payload = {"source": source, "target": target, "type": edge_type}
+            useful_attrs = {key: value for key, value in attrs.items() if value not in (None, "", [], {}, False)}
+            if useful_attrs:
+                payload["attrs"] = useful_attrs
+            if payload not in edges:
+                edges.append(payload)
+
+        add_node(
+            "memory_entry",
+            "memory_entry",
+            "memory probe",
+            assessment=memory_meta.get("memory_assessment"),
+            recall_strength=memory_meta.get("recall_signal_strength"),
+        )
+
+        attempted_pairs = list(memory_meta.get("memory_prompt_pairs_attempted", []) or [])
+        selected_pair = str(memory_meta.get("selected_memory_prompt_pair") or "")
+        for index, pair_name in enumerate(attempted_pairs, start=1):
+            node_id = f"memory_pair_{index}"
+            add_node(
+                node_id,
+                "memory_prompt_pair",
+                pair_name,
+                order=index,
+                selected=pair_name == selected_pair,
+            )
+            add_edge("memory_entry", node_id, "attempted_by", order=index)
+            if pair_name == selected_pair:
+                add_edge(node_id, "memory_entry", "selected_for")
+
+        if memory_meta.get("stateful_sequence_used"):
+            add_node(
+                "memory_stateful_sequence",
+                "memory_stateful_sequence",
+                str(memory_meta.get("selected_probe_sequence") or "stateful_sequence"),
+                mode=memory_meta.get("selected_sequence_mode"),
+                turn_count=memory_meta.get("sequence_turn_count"),
+            )
+            add_edge("memory_entry", "memory_stateful_sequence", "executed_as")
+
+        continuity_active = bool(
+            memory_meta.get("continuity_token_detected", False)
+            or memory_meta.get("continuity_token_reused", False)
+        )
+        if continuity_active:
+            add_node(
+                "memory_continuity",
+                "memory_continuity",
+                str(memory_meta.get("continuity_token_key") or "continuity_token"),
+                source_path=memory_meta.get("continuity_token_source_path"),
+                injection_mode=memory_meta.get("continuity_injection_mode"),
+                injection_key=memory_meta.get("continuity_injection_key"),
+                reused=memory_meta.get("continuity_token_reused"),
+            )
+            add_edge("memory_entry", "memory_continuity", "detected_as")
+
+        if memory_meta.get("canary_recall_detected"):
+            add_node(
+                "memory_recall",
+                "memory_recall",
+                str(memory_meta.get("canary_recall_mode") or "canary_recall"),
+                match=memory_meta.get("canary_recall_text_match"),
+            )
+            add_edge("memory_entry", "memory_recall", "recalled_as")
+            if continuity_active:
+                add_edge("memory_continuity", "memory_recall", "preserved_by")
+
+        summary = {
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "assessment": memory_meta.get("memory_assessment", "no_memory_signal"),
+            "attempted_pairs": attempted_pairs[:4],
+            "selected_pair": selected_pair or "none",
+            "continuity_active": continuity_active,
+            "recall_detected": bool(memory_meta.get("canary_recall_detected", False)),
+            "stateful_sequence_used": bool(memory_meta.get("stateful_sequence_used", False)),
+        }
+        return self._compact({"nodes": nodes, "edges": edges, "summary": summary})
+
+    def build_trace(
+        self,
+        *,
+        fingerprint: AttackResult = None,
+        plan: dict | None = None,
+        attack_results: dict[str, AttackResult] | None = None,
+        report_results: dict | None = None,
+        findings_summary: dict | None = None,
+        handoff: dict | None = None,
+        session_context: dict | None = None,
+        execution_hints: dict | None = None,
+    ) -> dict:
+        plan = plan or {}
+        attack_results = attack_results or {}
+        report_results = report_results or {
+            key: self._build_result_entry(key, value)
+            for key, value in attack_results.items()
+        }
+        findings_summary = findings_summary or self._build_findings_summary(
+            attack_results,
+            plan=plan,
+            report_results=report_results,
+        )
+        surface_details = self._extract_surface_details(fingerprint)
+        handoff = handoff or (surface_details.get("handoff", {}) if isinstance(surface_details, dict) else {}) or {}
+        session_context = session_context or self._extract_session_context(handoff)
+        execution_hints = execution_hints or self._extract_execution_hints(handoff)
+
+        entry_point = str(
+            (handoff.get("recommended_target_url") if isinstance(handoff, dict) else "")
+            or (surface_details.get("best_candidate") if isinstance(surface_details, dict) else "")
+            or self.target.url
+        )
+        entry_intent = str(
+            (handoff.get("intent") if isinstance(handoff, dict) else "")
+            or (surface_details.get("best_candidate_intent") if isinstance(surface_details, dict) else "")
+            or "unknown_surface"
+        )
+
+        chains: list[dict] = []
+        for module_name, entry in report_results.items():
+            if not isinstance(entry, dict):
+                continue
+            chain = self._build_module_trace_chain(
+                module_name=module_name,
+                entry=entry,
+                entry_point=entry_point,
+                entry_intent=entry_intent,
+                session_context=session_context,
+                execution_hints=execution_hints,
+            )
+            if chain:
+                chains.append(chain)
+
+        chains.sort(
+            key=lambda item: (
+                self._assessment_rank(item.get("assessment", "negative")),
+                -float(item.get("confidence", 0.0) or 0.0),
+                str(item.get("module", "")),
+            )
+        )
+
+        return self._compact(
+            {
+                "chains": chains,
+                "summary": {
+                    "chain_count": len(chains),
+                    "entry_point": entry_point,
+                    "entry_intent": entry_intent,
+                    "confirmed_or_probable": sum(
+                        1 for chain in chains
+                        if chain.get("assessment") in {"confirmed", "probable"}
+                    ),
+                    "top_modules": [chain.get("module") for chain in chains[:3]],
+                    "top_signals": list(findings_summary.get("top_signals", []) or [])[:4],
+                },
+            }
+        )
 
     def build_attack_graph(
         self,
@@ -508,6 +1459,14 @@ class ReportAgent(BaseAgent):
             auth_dependency=auth_dependency,
             overall_posture=overall_posture,
         )
+        simulation = self._build_twin_simulation(
+            best_candidate_intent=best_candidate_intent,
+            attackability=attackability,
+            auth_dependency=auth_dependency,
+            offensive_signals=offensive_signals,
+            session_material_present=bool(session_context.get("session_material_present")),
+            recommended_next_step=recommended_next_step,
+        )
 
         twin = {
             "identity": self._compact(
@@ -567,6 +1526,7 @@ class ReportAgent(BaseAgent):
                     "blockers": list(graph_summary.get("blockers", []) or [])[:4],
                 }
             ),
+            "simulation": simulation,
             "summary": self._compact(
                 {
                     "overall_posture": overall_posture,
@@ -574,6 +1534,16 @@ class ReportAgent(BaseAgent):
                     "auth_dependency": auth_dependency,
                     "recommended_next_step": recommended_next_step,
                     "twin_rationale": twin_rationale,
+                    "simulated_best_path": (
+                        simulation.get("summary", {}).get("best_path")
+                        if isinstance(simulation.get("summary", {}), dict)
+                        else None
+                    ),
+                    "scenario_count": (
+                        simulation.get("summary", {}).get("scenario_count")
+                        if isinstance(simulation.get("summary", {}), dict)
+                        else None
+                    ),
                 }
             ),
         }
@@ -617,6 +1587,14 @@ class ReportAgent(BaseAgent):
         defenses = ", ".join(report.detected_defenses) if report.detected_defenses else "none detected"
         findings = report.findings_summary or {}
         graph_summary = report.attack_graph.get("summary", {}) if isinstance(report.attack_graph, dict) else {}
+        trace_summary = report.trace.get("summary", {}) if isinstance(report.trace, dict) else {}
+        memory_graph_summary = report.memory_graph.get("summary", {}) if isinstance(report.memory_graph, dict) else {}
+        swarm_summary = report.swarm.get("summary", {}) if isinstance(report.swarm, dict) else {}
+        drift_summary = report.drift.get("summary", {}) if isinstance(report.drift, dict) else {}
+        toolforge_summary = report.toolforge.get("summary", {}) if isinstance(report.toolforge, dict) else {}
+        governor_summary = report.governor.get("summary", {}) if isinstance(report.governor, dict) else {}
+        boardroom_summary = report.boardroom.get("summary", {}) if isinstance(report.boardroom, dict) else {}
+        shadow_summary = report.shadow.get("summary", {}) if isinstance(report.shadow, dict) else {}
         twin_summary = report.adversarial_twin.get("summary", {}) if isinstance(report.adversarial_twin, dict) else {}
 
         self.console.print(
@@ -635,6 +1613,14 @@ class ReportAgent(BaseAgent):
                 f"[bold]Limitations:[/bold] [dim]{'; '.join(findings.get('operational_limitations', [])[:2]) or 'none'}[/dim]\n"
                 f"[bold]Highlights:[/bold] [dim]{'; '.join(findings.get('highlights', [])[:2]) or 'none'}[/dim]\n"
                 f"[bold]Attack Graph:[/bold] [dim]{graph_summary.get('node_count', 0)} nodes / {graph_summary.get('edge_count', 0)} edges[/dim]\n"
+                f"[bold]Trace:[/bold]     [dim]{trace_summary.get('chain_count', 0)} chains / entry={trace_summary.get('entry_intent', 'unknown')}[/dim]\n"
+                f"[bold]MemoryGraph:[/bold] [dim]{memory_graph_summary.get('node_count', 0)} nodes / assessment={memory_graph_summary.get('assessment', 'none')}[/dim]\n"
+                f"[bold]Swarm:[/bold]     [dim]{swarm_summary.get('roles_positive', 0)}/{swarm_summary.get('roles_run', 0)} positive / strongest={swarm_summary.get('strongest_role', 'none')}[/dim]\n"
+                f"[bold]ToolForge:[/bold] [dim]{toolforge_summary.get('chain_count', 0)} chains / strongest={toolforge_summary.get('strongest_chain', 'none')} / move={toolforge_summary.get('recommended_move', 'none')}[/dim]\n"
+                f"[bold]Governor:[/bold] [dim]{governor_summary.get('enforcement_posture', 'unknown')} / contradictions={governor_summary.get('contradiction_count', 0)} / move={governor_summary.get('recommended_move', 'none')}[/dim]\n"
+                f"[bold]Shadow:[/bold]    [dim]{shadow_summary.get('replay_readiness', 'unknown')} / safety={shadow_summary.get('replay_safety', 'unknown')} / move={shadow_summary.get('recommended_move', 'none')}[/dim]\n"
+                f"[bold]Drift:[/bold]     [dim]{drift_summary.get('changed_modules', 0)} changed / new signals={', '.join(drift_summary.get('new_top_signals', [])[:2]) or 'none'}[/dim]\n"
+                f"[bold]Boardroom:[/bold] [dim]{boardroom_summary.get('risk_posture', 'none')} / blast={boardroom_summary.get('blast_radius', 'none')} / action={boardroom_summary.get('recommended_action', 'none')}[/dim]\n"
                 f"[bold]Twin:[/bold]      [dim]{twin_summary.get('overall_posture', 'unknown')} / attackability={twin_summary.get('attackability', 'unknown')} / auth={twin_summary.get('auth_dependency', 'unknown')}[/dim]\n"
                 f"[bold]Next Step:[/bold] [dim]{twin_summary.get('recommended_next_step', 'none')}[/dim]\n"
                 f"[bold]Method:[/bold]    [dim]{methodology_note}[/dim]\n"
@@ -673,6 +1659,122 @@ class ReportAgent(BaseAgent):
             "observed_body_keys": list(profile.get("observed_body_keys", []) or []),
             "observed_query_param_names": list(profile.get("observed_query_param_names", []) or []),
         }
+
+    def _build_module_trace_chain(
+        self,
+        *,
+        module_name: str,
+        entry: dict,
+        entry_point: str,
+        entry_intent: str,
+        session_context: dict,
+        execution_hints: dict,
+    ) -> dict:
+        assessment = str(entry.get("assessment") or "negative").strip().lower()
+        module_assessment = str(entry.get("module_assessment") or "unknown").strip().lower()
+        rationale = str(entry.get("report_rationale") or "").strip()
+        key_signals = list(entry.get("key_signals", []) or [])
+        confidence = float(entry.get("confidence", 0.0) or 0.0)
+        meta = entry.get("evidence_meta", {}) if isinstance(entry.get("evidence_meta", {}), dict) else {}
+
+        stages: list[dict] = [
+            {
+                "kind": "entry_point",
+                "label": entry_point,
+                "intent": entry_intent,
+            }
+        ]
+        if execution_hints:
+            stages.append(
+                self._compact(
+                    {
+                        "kind": "execution_shape",
+                        "method": execution_hints.get("method_hint"),
+                        "content_type": execution_hints.get("content_type_hint"),
+                        "body_keys": list(execution_hints.get("observed_body_keys", []) or [])[:4],
+                        "query_keys": list(execution_hints.get("observed_query_param_names", []) or [])[:4],
+                        "streaming_likely": execution_hints.get("streaming_likely"),
+                    }
+                )
+            )
+        if session_context.get("session_material_present"):
+            stages.append(
+                self._compact(
+                    {
+                        "kind": "session_context",
+                        "cookie_count": session_context.get("session_cookie_count"),
+                        "cookie_names": list(session_context.get("session_cookie_names", []) or [])[:4],
+                        "source": session_context.get("session_cookie_source"),
+                        "merge_strategy": session_context.get("session_cookie_merge_strategy"),
+                    }
+                )
+            )
+        if module_assessment and module_assessment != "unknown":
+            stages.append(
+                self._compact(
+                    {
+                        "kind": "module_signal",
+                        "module_assessment": module_assessment,
+                        "key_signals": key_signals[:4],
+                    }
+                )
+            )
+        if rationale or assessment != "negative":
+            stages.append(
+                self._compact(
+                    {
+                        "kind": "impact",
+                        "assessment": assessment,
+                        "rationale": rationale,
+                    }
+                )
+            )
+
+        evidence_paths = self._trace_evidence_paths(module_name, meta)
+        return self._compact(
+            {
+                "module": module_name,
+                "assessment": assessment,
+                "confidence": confidence,
+                "module_assessment": module_assessment,
+                "key_signals": key_signals[:4],
+                "evidence_paths": evidence_paths,
+                "stages": stages,
+            }
+        )
+
+    def _trace_evidence_paths(self, module_name: str, meta: dict) -> list[str]:
+        paths = [f"{module_name}.evidence._meta"]
+        if not isinstance(meta, dict):
+            return paths
+
+        module_key_map = {
+            "memory_assessment": "assessment",
+            "extract_assessment": "assessment",
+            "best_classification": "classification",
+            "continuity_token_reused": "continuity",
+            "quoted_disclosure_detected": "disclosure",
+            "canary_recall_detected": "recall",
+        }
+        for key in module_key_map:
+            if key in meta and meta.get(key) not in (None, "", [], {}, False):
+                paths.append(f"{module_name}.evidence._meta.{key}")
+        return paths[:6]
+
+    def _normalize_baseline_result_entry(self, module_name: str, payload: dict) -> dict:
+        if not isinstance(payload, dict):
+            return {}
+        if "assessment" in payload and "module_assessment" in payload:
+            return payload
+        raw = AttackResult(
+            module=str(payload.get("module") or module_name),
+            target_url=str(payload.get("target_url") or self.target.url),
+            success=bool(payload.get("success", False)),
+            confidence=float(payload.get("confidence", 0.0) or 0.0),
+            evidence=payload.get("evidence", {}) if isinstance(payload.get("evidence", {}), dict) else {},
+            notes=payload.get("notes"),
+        )
+        return self._build_result_entry(module_name, raw)
 
     def _summarize_top_candidates(self, candidates: list[dict]) -> list[dict]:
         summarized = []
@@ -812,6 +1914,113 @@ class ReportAgent(BaseAgent):
                 f"Posture {overall_posture}; attackability {attackability}; auth dependency {auth_dependency}."
             )
         return " ".join(parts[:2]).strip()
+
+    def _build_twin_simulation(
+        self,
+        *,
+        best_candidate_intent: str,
+        attackability: str,
+        auth_dependency: str,
+        offensive_signals: dict,
+        session_material_present: bool,
+        recommended_next_step: str,
+    ) -> dict:
+        scenarios: list[dict] = []
+        extract_assessment = str(offensive_signals.get("extract_assessment", "") or "")
+        memory_assessment = str(offensive_signals.get("memory_assessment", "") or "")
+        strongest_findings = list(offensive_signals.get("strongest_findings", []) or [])
+
+        def add_scenario(
+            name: str,
+            *,
+            predicted_outcome: str,
+            confidence_band: str,
+            requirements: list[str] | None = None,
+            likely_path: list[str] | None = None,
+        ) -> None:
+            scenarios.append(
+                self._compact(
+                    {
+                        "scenario": name,
+                        "predicted_outcome": predicted_outcome,
+                        "confidence_band": confidence_band,
+                        "requirements": requirements or [],
+                        "likely_path": likely_path or [],
+                    }
+                )
+            )
+
+        unauth_outcome = "collect_more_surface"
+        unauth_confidence = "low"
+        if auth_dependency == "none" and attackability in {"medium", "high"}:
+            unauth_outcome = "viable_initial_probe"
+            unauth_confidence = "medium" if attackability == "medium" else "high"
+        elif extract_assessment in {"strong_instruction_disclosure", "stateful_disclosure_signal"}:
+            unauth_outcome = "surface_disclosure_possible"
+            unauth_confidence = "medium"
+        add_scenario(
+            "unauthenticated_probe",
+            predicted_outcome=unauth_outcome,
+            confidence_band=unauth_confidence,
+            requirements=["reachable target surface"],
+            likely_path=["target_root", best_candidate_intent or "unknown_surface", "extract_signal"],
+        )
+
+        session_outcome = "blocked_without_session"
+        session_confidence = "low"
+        if session_material_present and attackability in {"medium", "high"}:
+            session_outcome = "highest_probability_path"
+            session_confidence = "high"
+        elif auth_dependency in {"medium", "high"}:
+            session_outcome = "requires_session_capture"
+            session_confidence = "medium"
+        add_scenario(
+            "session_backed_probe",
+            predicted_outcome=session_outcome,
+            confidence_band=session_confidence,
+            requirements=["valid session context"] if auth_dependency in {"medium", "high"} else ["optional session context"],
+            likely_path=["best_candidate_endpoint", "session_capture", recommended_next_step],
+        )
+
+        memory_outcome = "memory_signal_absent"
+        memory_confidence = "low"
+        if memory_assessment in {"strong_stateful_memory_signal", "canary_recall_signal"}:
+            memory_outcome = "stateful_escalation_viable"
+            memory_confidence = "high" if attackability == "high" else "medium"
+        elif attackability in {"medium", "high"} and strongest_findings:
+            memory_outcome = "stateful_followup_worth_trying"
+            memory_confidence = "medium"
+        add_scenario(
+            "stateful_memory_escalation",
+            predicted_outcome=memory_outcome,
+            confidence_band=memory_confidence,
+            requirements=["multi-turn continuity", "memory-bearing surface"],
+            likely_path=["memory_entry", "memory_continuity", "memory_recall"],
+        )
+
+        rank = {"high": 0, "medium": 1, "low": 2}
+        scenarios.sort(
+            key=lambda item: (
+                rank.get(str(item.get("confidence_band", "low") or "low"), 2),
+                str(item.get("scenario", "")),
+            )
+        )
+        best_path = scenarios[0]["scenario"] if scenarios else "none"
+        if session_material_present and recommended_next_step == "attack_with_session":
+            best_path = "session_backed_probe"
+        elif memory_assessment in {"strong_stateful_memory_signal", "canary_recall_signal"} and attackability == "high":
+            best_path = "stateful_memory_escalation"
+
+        return self._compact(
+            {
+                "scenarios": scenarios,
+                "summary": {
+                    "scenario_count": len(scenarios),
+                    "best_path": best_path,
+                    "highest_confidence_scenario": scenarios[0]["scenario"] if scenarios else "none",
+                },
+            }
+        )
 
     def _compact(self, value):
         if isinstance(value, dict):

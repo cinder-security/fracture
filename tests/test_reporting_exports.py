@@ -285,6 +285,279 @@ class ReportAgentTests(unittest.TestCase):
         self.assertIn("session", graph["summary"]["auth_or_session_dependency"])
         self.assertNotIn("handoff", node_ids)
 
+    def test_report_agent_builds_trace_from_handoff_and_module_meta(self):
+        target = AITarget(url="https://example.test")
+        agent = ReportAgent(target)
+
+        fingerprint = AttackResult(
+            module="fingerprint",
+            target_url=target.url,
+            success=True,
+            confidence=0.9,
+            evidence={
+                "surface_discovery": {
+                    "details": {
+                        "best_candidate": "https://example.test/api/chat/messages",
+                        "best_candidate_intent": "chat_surface",
+                        "handoff": {
+                            "recommended_target_url": "https://example.test/api/chat/messages",
+                            "intent": "chat_surface",
+                            "session_material_present": True,
+                            "session_cookie_count": 1,
+                            "session_cookie_names": ["sessionid"],
+                            "session_cookie_source": "handoff",
+                            "session_cookie_merge_strategy": "captured_only",
+                            "invocation_profile": {
+                                "method_hint": "POST",
+                                "content_type_hint": "application/json",
+                                "observed_body_keys": ["message"],
+                                "observed_query_param_names": ["mode"],
+                            },
+                        },
+                    }
+                }
+            },
+        )
+        attack_results = {
+            "extract": AttackResult(
+                module="extract",
+                target_url=target.url,
+                success=True,
+                confidence=0.72,
+                evidence={
+                    "_meta": {
+                        "extract_assessment": "strong_instruction_disclosure",
+                        "quoted_disclosure_detected": True,
+                        "disclosure_markers": ["system prompt"],
+                    }
+                },
+                notes="Extract evaluation complete",
+            ),
+        }
+
+        report = asyncio.run(agent.run(fingerprint=fingerprint, attack_results=attack_results))
+        trace = report.trace
+        self.assertEqual(trace["summary"]["chain_count"], 1)
+        self.assertEqual(trace["summary"]["entry_intent"], "chat_surface")
+        self.assertEqual(trace["summary"]["top_modules"], ["extract"])
+        chain = trace["chains"][0]
+        self.assertEqual(chain["module"], "extract")
+        self.assertEqual(chain["assessment"], "confirmed")
+        self.assertIn("extract.evidence._meta.extract_assessment", chain["evidence_paths"])
+        stage_kinds = [stage["kind"] for stage in chain["stages"]]
+        self.assertIn("entry_point", stage_kinds)
+        self.assertIn("execution_shape", stage_kinds)
+        self.assertIn("session_context", stage_kinds)
+        self.assertIn("module_signal", stage_kinds)
+        self.assertIn("impact", stage_kinds)
+
+    def test_report_agent_builds_memory_graph_from_stateful_memory_meta(self):
+        target = AITarget(url="https://example.test")
+        agent = ReportAgent(target)
+
+        attack_results = {
+            "memory": AttackResult(
+                module="memory",
+                target_url=target.url,
+                success=True,
+                confidence=0.44,
+                evidence={
+                    "_meta": {
+                        "memory_assessment": "strong_stateful_memory_signal",
+                        "stateful_sequence_used": True,
+                        "selected_probe_sequence": "sequential_http_canary",
+                        "selected_sequence_mode": "sequential_http",
+                        "sequence_turn_count": 2,
+                        "memory_prompt_pairs_attempted": ["direct_remember_pair", "store_exact_string_pair"],
+                        "selected_memory_prompt_pair": "store_exact_string_pair",
+                        "continuity_token_detected": True,
+                        "continuity_token_key": "conversation_id",
+                        "continuity_token_source_path": "conversation_id",
+                        "continuity_token_reused": True,
+                        "continuity_injection_mode": "body",
+                        "continuity_injection_key": "conversation_id",
+                        "canary_recall_detected": True,
+                        "canary_recall_mode": "wrapped_exact",
+                        "canary_recall_text_match": "CINDER-CANARY-731",
+                    }
+                },
+                notes="Memory evaluation complete",
+            ),
+        }
+
+        report = asyncio.run(agent.run(attack_results=attack_results))
+        memory_graph = report.memory_graph
+        self.assertEqual(memory_graph["summary"]["assessment"], "strong_stateful_memory_signal")
+        self.assertEqual(memory_graph["summary"]["selected_pair"], "store_exact_string_pair")
+        self.assertTrue(memory_graph["summary"]["continuity_active"])
+        self.assertTrue(memory_graph["summary"]["recall_detected"])
+        node_ids = {node["id"] for node in memory_graph["nodes"]}
+        self.assertIn("memory_entry", node_ids)
+        self.assertIn("memory_stateful_sequence", node_ids)
+        self.assertIn("memory_continuity", node_ids)
+        self.assertIn("memory_recall", node_ids)
+        edge_pairs = {(edge["source"], edge["target"], edge["type"]) for edge in memory_graph["edges"]}
+        self.assertIn(("memory_entry", "memory_stateful_sequence", "executed_as"), edge_pairs)
+        self.assertIn(("memory_entry", "memory_continuity", "detected_as"), edge_pairs)
+        self.assertIn(("memory_entry", "memory_recall", "recalled_as"), edge_pairs)
+        self.assertIn(("memory_continuity", "memory_recall", "preserved_by"), edge_pairs)
+
+    def test_report_agent_builds_swarm_summary_from_multi_module_signal_alignment(self):
+        target = AITarget(url="https://example.test")
+        agent = ReportAgent(target)
+
+        attack_results = {
+            "extract": AttackResult(
+                module="extract",
+                target_url=target.url,
+                success=True,
+                confidence=0.72,
+                evidence={
+                    "_meta": {
+                        "extract_assessment": "strong_instruction_disclosure",
+                        "quoted_disclosure_detected": True,
+                        "disclosure_markers": ["system prompt"],
+                    }
+                },
+            ),
+            "memory": AttackResult(
+                module="memory",
+                target_url=target.url,
+                success=True,
+                confidence=0.44,
+                evidence={
+                    "_meta": {
+                        "memory_assessment": "canary_recall_signal",
+                        "canary_recall_detected": True,
+                        "canary_recall_mode": "wrapped_exact",
+                        "continuity_token_reused": True,
+                    }
+                },
+            ),
+        }
+
+        report = asyncio.run(agent.run(attack_results=attack_results))
+        swarm = report.swarm
+        self.assertEqual(swarm["summary"]["roles_run"], 2)
+        self.assertEqual(swarm["summary"]["roles_positive"], 2)
+        self.assertEqual(swarm["summary"]["strongest_role"], "disclosure_operator")
+        self.assertEqual(swarm["summary"]["strongest_module"], "extract")
+        self.assertEqual(swarm["summary"]["next_move"], "escalate_cross_signal_validation")
+        role_names = [role["role"] for role in swarm["roles"]]
+        self.assertEqual(role_names, ["disclosure_operator", "persistence_operator"])
+        self.assertIn("quoted disclosure detected", swarm["summary"]["consensus_signals"])
+        self.assertIn("canary recall wrapped_exact", swarm["summary"]["consensus_signals"])
+
+    def test_report_agent_builds_drift_against_prior_report(self):
+        target = AITarget(url="https://example.test")
+        agent = ReportAgent(target)
+
+        attack_results = {
+            "extract": AttackResult(
+                module="extract",
+                target_url=target.url,
+                success=True,
+                confidence=0.72,
+                evidence={
+                    "_meta": {
+                        "extract_assessment": "strong_instruction_disclosure",
+                        "quoted_disclosure_detected": True,
+                        "disclosure_markers": ["system prompt"],
+                    }
+                },
+            ),
+            "memory": AttackResult(
+                module="memory",
+                target_url=target.url,
+                success=True,
+                confidence=0.44,
+                evidence={
+                    "_meta": {
+                        "memory_assessment": "canary_recall_signal",
+                        "canary_recall_detected": True,
+                        "canary_recall_mode": "wrapped_exact",
+                    }
+                },
+            ),
+        }
+        baseline_report = {
+            "findings_summary": {
+                "confirmed": 0,
+                "probable": 1,
+                "possible": 0,
+                "negative": 1,
+                "top_signals": ["continuity token reused"],
+            },
+            "results": {
+                "extract": {
+                    "module": "extract",
+                    "target_url": target.url,
+                    "success": True,
+                    "confidence": 0.41,
+                    "evidence": {"_meta": {"extract_assessment": "partial_instruction_disclosure"}},
+                },
+                "memory": {
+                    "module": "memory",
+                    "target_url": target.url,
+                    "success": False,
+                    "confidence": 0.0,
+                    "evidence": {"_meta": {"memory_assessment": "no_memory_signal"}},
+                },
+            },
+        }
+
+        report = asyncio.run(agent.run(attack_results=attack_results, baseline_report=baseline_report))
+        drift = report.drift
+        self.assertTrue(drift["summary"]["baseline_present"])
+        self.assertEqual(drift["summary"]["changed_modules"], 2)
+        self.assertIn("quoted disclosure detected", drift["summary"]["new_top_signals"])
+        self.assertEqual(drift["summary"]["findings_delta"]["confirmed"], 1)
+        self.assertEqual(drift["summary"]["findings_delta"]["negative"], -1)
+        module_status = {entry["module"]: entry["status"] for entry in drift["modules"]}
+        self.assertEqual(module_status["extract"], "escalated")
+        self.assertEqual(module_status["memory"], "escalated")
+
+    def test_report_agent_builds_boardroom_summary(self):
+        target = AITarget(url="https://example.test")
+        agent = ReportAgent(target)
+
+        attack_results = {
+            "extract": AttackResult(
+                module="extract",
+                target_url=target.url,
+                success=True,
+                confidence=0.72,
+                evidence={
+                    "_meta": {
+                        "extract_assessment": "strong_instruction_disclosure",
+                        "quoted_disclosure_detected": True,
+                        "disclosure_markers": ["system prompt"],
+                    }
+                },
+            ),
+            "memory": AttackResult(
+                module="memory",
+                target_url=target.url,
+                success=True,
+                confidence=0.44,
+                evidence={
+                    "_meta": {
+                        "memory_assessment": "canary_recall_signal",
+                        "canary_recall_detected": True,
+                        "continuity_token_reused": True,
+                    }
+                },
+            ),
+        }
+
+        report = asyncio.run(agent.run(attack_results=attack_results))
+        boardroom = report.boardroom
+        self.assertEqual(boardroom["summary"]["risk_posture"], "boardroom_critical")
+        self.assertEqual(boardroom["summary"]["blast_radius"], "cross-surface")
+        self.assertEqual(boardroom["summary"]["recommended_action"], "immediate_exec_review")
+        self.assertTrue(boardroom["commercial_impact"]["cross_signal_consensus"] >= 2)
+        self.assertEqual(boardroom["operator_brief"]["strongest_role"], "disclosure_operator")
+
     def test_report_agent_builds_adversarial_twin_from_auth_graph_and_signals(self):
         target = AITarget(url="https://example.test")
         agent = ReportAgent(target)
@@ -406,7 +679,218 @@ class ReportAgentTests(unittest.TestCase):
         self.assertEqual(twin["summary"]["attackability"], "high")
         self.assertEqual(twin["summary"]["auth_dependency"], "medium")
         self.assertEqual(twin["summary"]["recommended_next_step"], "attack_with_session")
+        self.assertEqual(twin["summary"]["simulated_best_path"], "session_backed_probe")
+        self.assertEqual(twin["summary"]["scenario_count"], 3)
+        self.assertEqual(twin["simulation"]["summary"]["best_path"], "session_backed_probe")
+        self.assertEqual(twin["simulation"]["summary"]["scenario_count"], 3)
+        self.assertEqual(twin["simulation"]["scenarios"][0]["scenario"], "session_backed_probe")
         self.assertIn("Protected conversational surface", twin["summary"]["twin_rationale"])
+
+    def test_report_agent_builds_toolforge_from_tool_surface_and_specialist_modules(self):
+        target = AITarget(url="https://example.test")
+        agent = ReportAgent(target)
+
+        fingerprint = AttackResult(
+            module="fingerprint",
+            target_url=target.url,
+            success=True,
+            confidence=0.88,
+            evidence={
+                "surface_discovery": {
+                    "details": {
+                        "best_candidate_intent": "tool_or_agent_surface",
+                        "handoff": {
+                            "recommended_target_url": "https://example.test/api/agent/run",
+                            "intent": "tool_or_agent_surface",
+                            "auth_signals": ["authorization"],
+                            "invocation_profile": {
+                                "method_hint": "POST",
+                                "streaming_likely": True,
+                                "websocket_likely": True,
+                                "observed_body_keys": ["message", "tools", "history"],
+                                "observed_query_param_names": ["mode"],
+                            },
+                        },
+                    }
+                }
+            },
+        )
+        attack_results = {
+            "extract": AttackResult(
+                module="extract",
+                target_url=target.url,
+                success=True,
+                confidence=0.74,
+                evidence={"_meta": {"extract_assessment": "strong_instruction_disclosure"}},
+            ),
+            "obliteratus": AttackResult(
+                module="obliteratus",
+                target_url=target.url,
+                success=True,
+                confidence=0.63,
+                evidence={"_meta": {"best_classification": "policy_override_signal"}},
+            ),
+            "privesc": AttackResult(
+                module="privesc",
+                target_url=target.url,
+                success=True,
+                confidence=0.52,
+                evidence={"_meta": {"best_classification": "possible_privilege_escalation"}},
+            ),
+        }
+
+        report = asyncio.run(agent.run(fingerprint=fingerprint, attack_results=attack_results))
+        toolforge = report.toolforge
+        self.assertTrue(toolforge["summary"]["tool_surface_detected"])
+        self.assertEqual(toolforge["summary"]["surface_intent"], "tool_or_agent_surface")
+        self.assertEqual(toolforge["summary"]["strongest_chain"], "prompt_to_tool_override")
+        self.assertEqual(toolforge["summary"]["authority_exposure"], "elevated")
+        self.assertIn("tools", toolforge["summary"]["observed_contract_keys"])
+        self.assertEqual(toolforge["summary"]["recommended_move"], "probe_authority_confusion")
+        self.assertEqual(toolforge["chains"][0]["chain"], "prompt_to_tool_override")
+
+    def test_report_agent_builds_governor_from_policy_contradiction_signals(self):
+        target = AITarget(url="https://example.test")
+        agent = ReportAgent(target)
+
+        attack_results = {
+            "extract": AttackResult(
+                module="extract",
+                target_url=target.url,
+                success=True,
+                confidence=0.72,
+                evidence={"_meta": {"extract_assessment": "strong_instruction_disclosure"}},
+            ),
+            "obliteratus": AttackResult(
+                module="obliteratus",
+                target_url=target.url,
+                success=False,
+                confidence=0.0,
+                evidence={"_meta": {"best_classification": "refusal_or_policy_block"}},
+            ),
+            "privesc": AttackResult(
+                module="privesc",
+                target_url=target.url,
+                success=True,
+                confidence=0.51,
+                evidence={"_meta": {"best_classification": "possible_privilege_escalation"}},
+            ),
+        }
+
+        report = asyncio.run(agent.run(attack_results=attack_results))
+        governor = report.governor
+        self.assertEqual(governor["summary"]["enforcement_posture"], "contradictory")
+        self.assertEqual(governor["summary"]["override_pressure"], 2)
+        self.assertEqual(governor["summary"]["refusal_pressure"], 1)
+        self.assertGreaterEqual(governor["summary"]["contradiction_count"], 1)
+        self.assertEqual(governor["summary"]["recommended_move"], "minimize_input_for_policy_flip")
+        self.assertTrue(governor["summary"]["strongest_gap"].startswith("extract:"))
+
+    def test_report_agent_builds_reality_demo_world_from_twin_and_surface(self):
+        target = AITarget(url="https://example.test")
+        agent = ReportAgent(target)
+
+        fingerprint = AttackResult(
+            module="fingerprint",
+            target_url=target.url,
+            success=True,
+            confidence=0.9,
+            evidence={
+                "surface_discovery": {
+                    "details": {
+                        "best_candidate": "https://example.test/api/agent/run",
+                        "best_candidate_intent": "tool_or_agent_surface",
+                        "handoff": {
+                            "recommended_target_url": "https://example.test/api/agent/run",
+                            "intent": "tool_or_agent_surface",
+                            "session_material_present": True,
+                            "session_cookie_count": 1,
+                            "session_cookie_names": ["sessionid"],
+                        },
+                    }
+                }
+            },
+        )
+        attack_results = {
+            "extract": AttackResult(
+                module="extract",
+                target_url=target.url,
+                success=True,
+                confidence=0.72,
+                evidence={"_meta": {"extract_assessment": "strong_instruction_disclosure"}},
+            ),
+        }
+
+        report = asyncio.run(agent.run(fingerprint=fingerprint, attack_results=attack_results))
+        reality = report.reality
+        self.assertEqual(reality["world"]["intent"], "tool_or_agent_surface")
+        self.assertTrue(reality["summary"]["tenant"].startswith("orchestra_"))
+        self.assertEqual(reality["summary"]["identity_count"], 3)
+        self.assertEqual(reality["summary"]["document_count"], 3)
+        self.assertEqual(reality["summary"]["session_count"], 2)
+        self.assertEqual(reality["summary"]["scenario_label"], "tool_or_agent_surface_demo_world")
+        self.assertEqual(reality["summary"]["recommended_use"], "high_fidelity_demo_replay")
+
+    def test_report_agent_builds_shadow_from_session_backed_surface(self):
+        target = AITarget(url="https://example.test")
+        agent = ReportAgent(target)
+
+        fingerprint = AttackResult(
+            module="fingerprint",
+            target_url=target.url,
+            success=True,
+            confidence=0.91,
+            evidence={
+                "surface_discovery": {
+                    "details": {
+                        "best_candidate": "https://example.test/api/chat/messages",
+                        "best_candidate_intent": "chat_surface",
+                        "session_required": True,
+                        "browser_session_likely": True,
+                        "handoff": {
+                            "recommended_target_url": "https://example.test/api/chat/messages",
+                            "intent": "chat_surface",
+                            "session_required": True,
+                            "browser_session_likely": True,
+                            "auth_wall_type": "form_login",
+                            "manual_login_recommended": True,
+                            "session_material_present": True,
+                            "session_cookie_count": 1,
+                            "session_cookie_names": ["sessionid"],
+                            "invocation_profile": {
+                                "method_hint": "POST",
+                                "streaming_likely": False,
+                                "websocket_likely": False,
+                            },
+                        },
+                    }
+                }
+            },
+        )
+        attack_results = {
+            "extract": AttackResult(
+                module="extract",
+                target_url=target.url,
+                success=True,
+                confidence=0.72,
+                evidence={"_meta": {"extract_assessment": "strong_instruction_disclosure"}},
+            ),
+            "memory": AttackResult(
+                module="memory",
+                target_url=target.url,
+                success=True,
+                confidence=0.44,
+                evidence={"_meta": {"memory_assessment": "canary_recall_signal", "canary_recall_detected": True}},
+            ),
+        }
+
+        report = asyncio.run(agent.run(fingerprint=fingerprint, attack_results=attack_results))
+        shadow = report.shadow
+        self.assertEqual(shadow["summary"]["replay_readiness"], "high")
+        self.assertEqual(shadow["summary"]["replay_safety"], "mirrored")
+        self.assertEqual(shadow["summary"]["validation_window"], "broad")
+        self.assertEqual(shadow["summary"]["auth_dependency"], "session")
+        self.assertEqual(shadow["summary"]["recommended_move"], "replay_in_shadow_mode")
 
     def test_report_agent_preserves_canary_recall_as_non_negative_signal(self):
         target = AITarget(url="https://example.test")
@@ -790,6 +1274,7 @@ class ExportTests(unittest.TestCase):
                 self.assertIn("possible_ssrf_like_behavior", document)
                 self.assertIn("Module assessment", document)
                 self.assertIn("Executive signal", document)
+                self.assertIn("Boardroom posture", document)
                 self.assertIn("Assessment basis", document)
                 self.assertIn("Rationale:", document)
                 self.assertIn("automated heuristic signals", document)
@@ -806,6 +1291,7 @@ class ExportTests(unittest.TestCase):
             self.assertIn(b"possible_ssrf_like_behavior", data)
             self.assertIn(b"Module assessment", data)
             self.assertIn(b"Executive signal", data)
+            self.assertIn(b"Boardroom posture", data)
             self.assertIn(b"Assessment basis", data)
             self.assertIn(b"Rationale:", data)
             self.assertIn(b"automated heuristic signals", data)

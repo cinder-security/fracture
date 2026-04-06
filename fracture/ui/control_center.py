@@ -63,6 +63,11 @@ def load_control_center_bundle(
     )
     findings_summary = _first_dict(report_payload.get("findings_summary"))
     report_results = report_payload.get("results") if isinstance(report_payload.get("results"), dict) else {}
+    boardroom = _first_dict(report_payload.get("boardroom"))
+    toolforge = _first_dict(report_payload.get("toolforge"), attack_payload.get("toolforge"))
+    governor = _first_dict(report_payload.get("governor"), attack_payload.get("governor"))
+    reality = _first_dict(report_payload.get("reality"), attack_payload.get("reality"))
+    shadow = _first_dict(report_payload.get("shadow"), attack_payload.get("shadow"))
 
     overview = {
         "target": _first_str(
@@ -149,6 +154,11 @@ def load_control_center_bundle(
         attack_graph=attack_graph,
         adversarial_twin=adversarial_twin,
         findings=findings,
+        boardroom=boardroom,
+        toolforge=toolforge,
+        governor=governor,
+        reality=reality,
+        shadow=shadow,
     )
     resolved_workspace = str(Path(workspace).resolve()) if workspace else None
 
@@ -167,6 +177,11 @@ def load_control_center_bundle(
         "overview": overview,
         "attack_graph": attack_graph or {"nodes": [], "edges": [], "summary": {}},
         "adversarial_twin": adversarial_twin or {},
+        "boardroom": boardroom or {},
+        "toolforge": toolforge or {},
+        "governor": governor or {},
+        "reality": reality or {},
+        "shadow": shadow or {},
         "findings": findings,
         "executive": executive,
         "artifacts_payload": sanitized_artifacts,
@@ -400,6 +415,10 @@ def _render_html(bundle: dict) -> str:
       const graph = data.attack_graph || {{}};
       const graphSummary = graph.summary || {{}};
       const twin = data.adversarial_twin || {{}};
+      const toolforge = data.toolforge || {{}};
+      const governor = data.governor || {{}};
+      const reality = data.reality || {{}};
+      const shadow = data.shadow || {{}};
       const findings = data.findings || {{}};
       const executive = data.executive || {{}};
       const initialView = params.get("view") || "executive";
@@ -429,6 +448,12 @@ def _render_html(bundle: dict) -> str:
               <div class="item"><div class="label">Operational Limitations</div><div>${{list(executive.operational_limitations).join(" ; ") || "none"}}</div></div>
             </div>
           </section>
+        </div>
+        <div class="card-grid">
+          <section class="card"><h2>ToolForge</h2>${{renderPairs(toolforge.summary || {{}})}}</section>
+          <section class="card"><h2>Governor</h2>${{renderPairs(governor.summary || {{}})}}</section>
+          <section class="card"><h2>Reality</h2>${{renderPairs(reality.summary || {{}})}}</section>
+          <section class="card"><h2>Shadow</h2>${{renderPairs(shadow.summary || {{}})}}</section>
         </div>
       </div>`;
 
@@ -490,7 +515,7 @@ def _render_html(bundle: dict) -> str:
 
       const renderTwin = () => {{
         const summary = twin.summary || {{}};
-        const sections = [["Auth Profile", twin.auth_profile || {{}}],["Session Context", twin.session_profile || {{}}],["Invocation Profile", twin.invocation_profile || {{}}],["Surface Model", twin.surface_model || {{}}],["Offensive Signals", twin.offensive_signals || {{}}]];
+        const sections = [["Auth Profile", twin.auth_profile || {{}}],["Session Context", twin.session_profile || {{}}],["Invocation Profile", twin.invocation_profile || {{}}],["Surface Model", twin.surface_model || {{}}],["Offensive Signals", twin.offensive_signals || {{}}],["ToolForge", toolforge.summary || {{}}],["Governor", governor.summary || {{}}],["Reality", reality.summary || {{}}],["Shadow", shadow.summary || {{}}]];
         return `<div class="card-grid">
           <section class="card"><h2>Summary</h2>
             ${{
@@ -500,6 +525,8 @@ def _render_html(bundle: dict) -> str:
                     <div class="item"><div class="label">Attackability</div><div>${{safe(summary.attackability)}}</div></div>
                     <div class="item"><div class="label">Auth Dependency</div><div>${{safe(summary.auth_dependency)}}</div></div>
                     <div class="item"><div class="label">Next Step</div><div>${{safe(summary.recommended_next_step)}}</div></div>
+                    <div class="item"><div class="label">Simulated Best Path</div><div>${{safe(summary.simulated_best_path)}}</div></div>
+                    <div class="item"><div class="label">Scenario Count</div><div>${{safe(summary.scenario_count)}}</div></div>
                   </div>
                   <div class="item" style="margin-top:16px"><div class="label">Twin Rationale</div><div>${{safe(summary.twin_rationale)}}</div></div>`
                 : '<div class="empty">adversarial_twin.summary is not available.</div>'
@@ -649,10 +676,24 @@ def _build_executive_summary(
     attack_graph: dict,
     adversarial_twin: dict,
     findings: dict,
+    boardroom: dict | None = None,
+    toolforge: dict | None = None,
+    governor: dict | None = None,
+    reality: dict | None = None,
+    shadow: dict | None = None,
 ) -> dict:
     graph_summary = _first_dict((attack_graph or {}).get("summary"))
     twin_summary = _first_dict((adversarial_twin or {}).get("summary"))
+    boardroom_summary = _first_dict((boardroom or {}).get("summary"))
+    boardroom_operator = _first_dict((boardroom or {}).get("operator_brief"))
+    toolforge_summary = _first_dict((toolforge or {}).get("summary"))
+    governor_summary = _first_dict((governor or {}).get("summary"))
+    reality_summary = _first_dict((reality or {}).get("summary"))
+    shadow_summary = _first_dict((shadow or {}).get("summary"))
     top_finding = _first_str(
+        boardroom_summary.get("top_finding") if boardroom_summary else None,
+        governor_summary.get("strongest_gap") if governor_summary else None,
+        toolforge_summary.get("strongest_chain") if toolforge_summary else None,
         *(findings.get("executive_summary", []) or []),
         *(findings.get("highlights", []) or []),
     )
@@ -676,13 +717,27 @@ def _build_executive_summary(
     return {
         "top_finding": top_finding or "No decisive top finding was present in the loaded artifacts.",
         "top_signals": list((findings.get("key_signals", []) or [])[:5]),
-        "overall_posture": overview.get("overall_posture", "unknown"),
+        "overall_posture": _first_str(
+            boardroom_summary.get("risk_posture") if boardroom_summary else None,
+            overview.get("overall_posture", "unknown"),
+        ) or "unknown",
         "attackability": overview.get("attackability", "unknown"),
         "auth_wall": overview.get("auth_wall_type", "no_auth_wall"),
         "auth_dependency": auth_dependency,
-        "recommended_next_step": overview.get("recommended_next_step", "collect_more_artifacts"),
+        "recommended_next_step": _first_str(
+            boardroom_summary.get("recommended_action") if boardroom_summary else None,
+            boardroom_operator.get("next_step") if boardroom_operator else None,
+            shadow_summary.get("recommended_move") if shadow_summary else None,
+            governor_summary.get("recommended_move") if governor_summary else None,
+            toolforge_summary.get("recommended_move") if toolforge_summary else None,
+            reality_summary.get("recommended_use") if reality_summary else None,
+            overview.get("recommended_next_step", "collect_more_artifacts"),
+        ) or "collect_more_artifacts",
         "operational_limitations": list((findings.get("operational_limitations", []) or [])[:4]),
-        "primary_path": list((graph_summary.get("primary_path", []) or [])[:6]),
+        "primary_path": list(
+            (boardroom_operator.get("primary_path") if boardroom_operator else None)
+            or (graph_summary.get("primary_path", []) or [])
+        )[:6],
     }
 
 

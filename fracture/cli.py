@@ -153,11 +153,8 @@ def _extract_handoff_session_cookies(handoff: dict | None) -> list[dict]:
 
 def _build_session_context(target, handoff: dict | None = None) -> dict:
     target_context = getattr(target, "session_context", {}) if target is not None else {}
-    if isinstance(target_context, dict) and target_context:
-        return dict(target_context)
-
     handoff = handoff if isinstance(handoff, dict) else {}
-    return {
+    handoff_context = {
         "session_material_present": bool(handoff.get("session_material_present")),
         "session_cookie_count": int(handoff.get("session_cookie_count", 0) or 0),
         "session_cookie_names": list(handoff.get("session_cookie_names", []) or []),
@@ -168,6 +165,12 @@ def _build_session_context(target, handoff: dict | None = None) -> dict:
         "session_scope_applied": bool(handoff.get("session_scope_applied", False)),
         "session_propagation_note": str(handoff.get("session_propagation_note", "") or ""),
     }
+    if isinstance(target_context, dict) and target_context:
+        if bool(target_context.get("session_material_present")) or int(target_context.get("session_cookie_count", 0) or 0) > 0:
+            merged = dict(handoff_context)
+            merged.update(target_context)
+            return merged
+    return handoff_context
 
 
 def _build_auth_wall_context(handoff: dict | None = None, surface_details: dict | None = None) -> dict:
@@ -722,6 +725,139 @@ def _print_adversarial_twin_summary(adversarial_twin: dict | None):
     ))
 
 
+def _print_trace_summary(trace: dict | None):
+    if not isinstance(trace, dict) or not trace:
+        return
+    summary = trace.get("summary", {}) if isinstance(trace.get("summary", {}), dict) else {}
+    console.print(Panel(
+        f"[bold]Chains:[/bold] [dim]{summary.get('chain_count', 0)}[/dim]\n"
+        f"[bold]Entry:[/bold] [dim]{summary.get('entry_intent', 'unknown')}[/dim]\n"
+        f"[bold]Modules:[/bold] [dim]{', '.join(summary.get('top_modules', [])[:3]) or 'none'}[/dim]\n"
+        f"[bold]Signals:[/bold] [dim]{', '.join(summary.get('top_signals', [])[:4]) or 'none'}[/dim]",
+        title="[bold yellow]Trace[/bold yellow]",
+        border_style="yellow",
+    ))
+
+
+def _print_memory_graph_summary(memory_graph: dict | None):
+    if not isinstance(memory_graph, dict) or not memory_graph:
+        return
+    summary = memory_graph.get("summary", {}) if isinstance(memory_graph.get("summary", {}), dict) else {}
+    console.print(Panel(
+        f"[bold]Nodes:[/bold] [dim]{summary.get('node_count', 0)}[/dim]\n"
+        f"[bold]Assessment:[/bold] [dim]{summary.get('assessment', 'none')}[/dim]\n"
+        f"[bold]Selected Pair:[/bold] [dim]{summary.get('selected_pair', 'none')}[/dim]\n"
+        f"[bold]Continuity:[/bold] [dim]{'yes' if summary.get('continuity_active') else 'no'}[/dim]\n"
+        f"[bold]Recall:[/bold] [dim]{'yes' if summary.get('recall_detected') else 'no'}[/dim]",
+        title="[bold yellow]MemoryGraph[/bold yellow]",
+        border_style="yellow",
+    ))
+
+
+def _print_swarm_summary(swarm: dict | None):
+    if not isinstance(swarm, dict) or not swarm:
+        return
+    summary = swarm.get("summary", {}) if isinstance(swarm.get("summary", {}), dict) else {}
+    console.print(Panel(
+        f"[bold]Roles:[/bold] [dim]{summary.get('roles_positive', 0)}/{summary.get('roles_run', 0)} positive[/dim]\n"
+        f"[bold]Strongest:[/bold] [dim]{summary.get('strongest_role', 'none')} ({summary.get('strongest_module', 'none')})[/dim]\n"
+        f"[bold]Consensus:[/bold] [dim]{', '.join(summary.get('consensus_signals', [])[:4]) or 'none'}[/dim]\n"
+        f"[bold]Next Move:[/bold] [dim]{summary.get('next_move', 'none')}[/dim]",
+        title="[bold yellow]Swarm[/bold yellow]",
+        border_style="yellow",
+    ))
+
+
+def _print_toolforge_summary(toolforge: dict | None):
+    if not isinstance(toolforge, dict) or not toolforge:
+        return
+    summary = toolforge.get("summary", {}) if isinstance(toolforge.get("summary", {}), dict) else {}
+    console.print(Panel(
+        f"[bold]Surface:[/bold] [dim]{summary.get('surface_intent', 'unknown')} / detected={'yes' if summary.get('tool_surface_detected') else 'no'}[/dim]\n"
+        f"[bold]Chains:[/bold] [dim]{summary.get('chain_count', 0)} / strongest={summary.get('strongest_chain', 'none')}[/dim]\n"
+        f"[bold]Authority:[/bold] [dim]{summary.get('authority_exposure', 'none')}[/dim]\n"
+        f"[bold]Contract Keys:[/bold] [dim]{', '.join(summary.get('observed_contract_keys', [])[:4]) or 'none'}[/dim]\n"
+        f"[bold]Next Move:[/bold] [dim]{summary.get('recommended_move', 'none')}[/dim]",
+        title="[bold yellow]ToolForge[/bold yellow]",
+        border_style="yellow",
+    ))
+
+
+def _print_governor_summary(governor: dict | None):
+    if not isinstance(governor, dict) or not governor:
+        return
+    summary = governor.get("summary", {}) if isinstance(governor.get("summary", {}), dict) else {}
+    console.print(Panel(
+        f"[bold]Posture:[/bold] [dim]{summary.get('enforcement_posture', 'unknown')}[/dim]\n"
+        f"[bold]Pressure:[/bold] [dim]override={summary.get('override_pressure', 0)} / refusal={summary.get('refusal_pressure', 0)}[/dim]\n"
+        f"[bold]Contradictions:[/bold] [dim]{summary.get('contradiction_count', 0)}[/dim]\n"
+        f"[bold]Gap:[/bold] [dim]{summary.get('strongest_gap', 'none')}[/dim]\n"
+        f"[bold]Next Move:[/bold] [dim]{summary.get('recommended_move', 'none')}[/dim]",
+        title="[bold yellow]Governor[/bold yellow]",
+        border_style="yellow",
+    ))
+
+
+def _print_reality_summary(reality: dict | None):
+    if not isinstance(reality, dict) or not reality:
+        return
+    summary = reality.get("summary", {}) if isinstance(reality.get("summary", {}), dict) else {}
+    world = reality.get("world", {}) if isinstance(reality.get("world", {}), dict) else {}
+    console.print(Panel(
+        f"[bold]Tenant:[/bold] [dim]{summary.get('tenant', 'unknown')}[/dim]\n"
+        f"[bold]Scenario:[/bold] [dim]{summary.get('scenario_label', 'unknown')}[/dim]\n"
+        f"[bold]Assets:[/bold] [dim]ids={summary.get('identity_count', 0)} docs={summary.get('document_count', 0)} sessions={summary.get('session_count', 0)}[/dim]\n"
+        f"[bold]Realism:[/bold] [dim]{world.get('realism_score', 0)}/10[/dim]\n"
+        f"[bold]Use:[/bold] [dim]{summary.get('recommended_use', 'none')}[/dim]",
+        title="[bold yellow]Reality[/bold yellow]",
+        border_style="yellow",
+    ))
+
+
+def _print_shadow_summary(shadow: dict | None):
+    if not isinstance(shadow, dict) or not shadow:
+        return
+    summary = shadow.get("summary", {}) if isinstance(shadow.get("summary", {}), dict) else {}
+    console.print(Panel(
+        f"[bold]Readiness:[/bold] [dim]{summary.get('replay_readiness', 'unknown')}[/dim]\n"
+        f"[bold]Safety:[/bold] [dim]{summary.get('replay_safety', 'unknown')}[/dim]\n"
+        f"[bold]Window:[/bold] [dim]{summary.get('validation_window', 'unknown')}[/dim]\n"
+        f"[bold]Auth:[/bold] [dim]{summary.get('auth_dependency', 'none')}[/dim]\n"
+        f"[bold]Next Move:[/bold] [dim]{summary.get('recommended_move', 'none')}[/dim]",
+        title="[bold yellow]Shadow[/bold yellow]",
+        border_style="yellow",
+    ))
+
+
+def _print_drift_summary(drift: dict | None):
+    if not isinstance(drift, dict) or not drift:
+        return
+    summary = drift.get("summary", {}) if isinstance(drift.get("summary", {}), dict) else {}
+    findings_delta = summary.get("findings_delta", {}) if isinstance(summary.get("findings_delta", {}), dict) else {}
+    console.print(Panel(
+        f"[bold]Changed:[/bold] [dim]{summary.get('changed_modules', 0)} modules[/dim]\n"
+        f"[bold]Findings Delta:[/bold] [dim]confirmed {findings_delta.get('confirmed', 0)} / probable {findings_delta.get('probable', 0)} / possible {findings_delta.get('possible', 0)}[/dim]\n"
+        f"[bold]New Signals:[/bold] [dim]{', '.join(summary.get('new_top_signals', [])[:4]) or 'none'}[/dim]\n"
+        f"[bold]Dropped Signals:[/bold] [dim]{', '.join(summary.get('dropped_top_signals', [])[:4]) or 'none'}[/dim]",
+        title="[bold yellow]Drift[/bold yellow]",
+        border_style="yellow",
+    ))
+
+
+def _print_boardroom_summary(boardroom: dict | None):
+    if not isinstance(boardroom, dict) or not boardroom:
+        return
+    summary = boardroom.get("summary", {}) if isinstance(boardroom.get("summary", {}), dict) else {}
+    console.print(Panel(
+        f"[bold]Posture:[/bold] [dim]{summary.get('risk_posture', 'unknown')}[/dim]\n"
+        f"[bold]Blast Radius:[/bold] [dim]{summary.get('blast_radius', 'unknown')}[/dim]\n"
+        f"[bold]Top Finding:[/bold] [dim]{summary.get('top_finding', 'none')}[/dim]\n"
+        f"[bold]Action:[/bold] [dim]{summary.get('recommended_action', 'none')}[/dim]",
+        title="[bold yellow]Boardroom[/bold yellow]",
+        border_style="yellow",
+    ))
+
+
 def _print_phantomtwin_runtime_guard(mode: str):
     if str(mode or "passive").strip().lower() != "phantomtwin":
         return
@@ -962,6 +1098,19 @@ def _serialize_attack_result(result) -> dict:
         "timestamp": getattr(result, "timestamp", ""),
         "evidence": getattr(result, "evidence", {}),
     }
+
+
+def _load_optional_json(path: str | None) -> dict | None:
+    if not path:
+        return None
+    candidate = Path(path)
+    if not candidate.exists():
+        return None
+    try:
+        payload = json.loads(candidate.read_text())
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _print_attack_summary(target, modules: list[str], results: dict):
@@ -1501,16 +1650,56 @@ def attack(
         )
     )
     attack_results = results.get("attacks", {})
+    baseline_payload = _load_optional_json(output)
     from fracture.agents.report import ReportAgent
 
-    attack_graph = ReportAgent(ai_target, console=console).build_attack_graph(
+    report_agent = ReportAgent(ai_target, console=console)
+    attack_graph = report_agent.build_attack_graph(
         plan={},
         attack_results=attack_results,
         handoff=handoff or {},
         session_context=session_context,
         execution_hints=execution_hints,
     )
-    adversarial_twin = ReportAgent(ai_target, console=console).build_adversarial_twin(
+    trace = report_agent.build_trace(
+        plan={},
+        attack_results=attack_results,
+        handoff=handoff or {},
+        session_context=session_context,
+        execution_hints=execution_hints,
+    )
+    memory_graph = report_agent.build_memory_graph(
+        attack_results=attack_results,
+    )
+    swarm = report_agent.build_swarm(
+        attack_results=attack_results,
+    )
+    toolforge = report_agent.build_toolforge(
+        plan={},
+        attack_results=attack_results,
+        handoff=handoff or {},
+        session_context=session_context,
+        execution_hints=execution_hints,
+    )
+    report_results = {
+        name: report_agent._build_result_entry(name, result)
+        for name, result in attack_results.items()
+    }
+    findings_summary = report_agent._build_findings_summary(
+        attack_results,
+        report_results=report_results,
+    )
+    drift = report_agent.build_drift(
+        report_results=report_results,
+        findings_summary=findings_summary,
+        baseline_report=baseline_payload,
+    )
+    governor = report_agent.build_governor(
+        report_results=report_results,
+        trace=trace,
+        drift=drift,
+    )
+    adversarial_twin = report_agent.build_adversarial_twin(
         plan={},
         attack_results=attack_results,
         attack_graph=attack_graph,
@@ -1518,12 +1707,45 @@ def attack(
         session_context=session_context,
         execution_hints=execution_hints,
     )
+    reality = report_agent.build_reality(
+        plan={},
+        report_results=report_results,
+        attack_graph=attack_graph,
+        adversarial_twin=adversarial_twin,
+    )
+    shadow = report_agent.build_shadow(
+        plan={},
+        report_results=report_results,
+        adversarial_twin=adversarial_twin,
+        handoff=handoff or {},
+        session_context=session_context,
+        execution_hints=execution_hints,
+    )
+    boardroom = report_agent.build_boardroom(
+        findings_summary=findings_summary,
+        report_results=report_results,
+        attack_graph=attack_graph,
+        trace=trace,
+        memory_graph=memory_graph,
+        swarm=swarm,
+        drift=drift,
+        adversarial_twin=adversarial_twin,
+    )
 
     _print_attack_summary(ai_target, requested_modules, attack_results)
 
     for result in attack_results.values():
         _print_generic_result(result)
     _print_attack_graph_summary(attack_graph)
+    _print_trace_summary(trace)
+    _print_memory_graph_summary(memory_graph)
+    _print_swarm_summary(swarm)
+    _print_toolforge_summary(toolforge)
+    _print_governor_summary(governor)
+    _print_reality_summary(reality)
+    _print_shadow_summary(shadow)
+    _print_drift_summary(drift)
+    _print_boardroom_summary(boardroom)
     _print_adversarial_twin_summary(adversarial_twin)
     _print_attack_operator_cue(attack_results, attack_auth_context)
 
@@ -1551,6 +1773,15 @@ def attack(
                 for name, result in attack_results.items()
             },
             "attack_graph": attack_graph,
+            "trace": trace,
+            "memory_graph": memory_graph,
+            "swarm": swarm,
+            "toolforge": toolforge,
+            "governor": governor,
+            "reality": reality,
+            "shadow": shadow,
+            "drift": drift,
+            "boardroom": boardroom,
             "adversarial_twin": adversarial_twin,
         }
 

@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from rich.console import Console
 from rich.panel import Panel
 
@@ -66,6 +69,33 @@ class Orchestrator:
             session_context=kwargs.get("session_context"),
             execution_hints=kwargs.get("execution_hints"),
         )
+        trace = self.report.build_trace(
+            plan=kwargs.get("plan"),
+            attack_results=attack_results,
+            handoff=kwargs.get("handoff"),
+            session_context=kwargs.get("session_context"),
+            execution_hints=kwargs.get("execution_hints"),
+        )
+        memory_graph = self.report.build_memory_graph(
+            attack_results=attack_results,
+        )
+        swarm = self.report.build_swarm(
+            attack_results=attack_results,
+        )
+        toolforge = self.report.build_toolforge(
+            plan=kwargs.get("plan"),
+            attack_results=attack_results,
+            handoff=kwargs.get("handoff"),
+            session_context=kwargs.get("session_context"),
+            execution_hints=kwargs.get("execution_hints"),
+        )
+        governor = self.report.build_governor(
+            report_results={
+                name: self.report._build_result_entry(name, result)
+                for name, result in attack_results.items()
+            },
+            trace=trace,
+        )
         adversarial_twin = self.report.build_adversarial_twin(
             plan=kwargs.get("plan"),
             attack_results=attack_results,
@@ -74,10 +104,37 @@ class Orchestrator:
             session_context=kwargs.get("session_context"),
             execution_hints=kwargs.get("execution_hints"),
         )
+        reality = self.report.build_reality(
+            plan=kwargs.get("plan"),
+            report_results={
+                name: self.report._build_result_entry(name, result)
+                for name, result in attack_results.items()
+            },
+            attack_graph=attack_graph,
+            adversarial_twin=adversarial_twin,
+        )
+        shadow = self.report.build_shadow(
+            plan=kwargs.get("plan"),
+            report_results={
+                name: self.report._build_result_entry(name, result)
+                for name, result in attack_results.items()
+            },
+            adversarial_twin=adversarial_twin,
+            handoff=kwargs.get("handoff"),
+            session_context=kwargs.get("session_context"),
+            execution_hints=kwargs.get("execution_hints"),
+        )
 
         return {
             "attacks": attack_results,
             "attack_graph": attack_graph,
+            "trace": trace,
+            "memory_graph": memory_graph,
+            "swarm": swarm,
+            "toolforge": toolforge,
+            "governor": governor,
+            "reality": reality,
+            "shadow": shadow,
             "adversarial_twin": adversarial_twin,
         }
 
@@ -117,11 +174,18 @@ class Orchestrator:
         )
 
         self.console.print("[dim]Phase 4: ReportAgent (report generation)...[/dim]")
+        baseline_report = None
+        if output_path and Path(output_path).exists():
+            try:
+                baseline_report = json.loads(Path(output_path).read_text())
+            except Exception:
+                baseline_report = None
         report = await self.report.run(
             fingerprint=fingerprint,
             plan=plan,
             attack_results=attack_results,
             output_path=output_path,
+            baseline_report=baseline_report,
         )
 
         return {
@@ -130,5 +194,14 @@ class Orchestrator:
             "attacks": attack_results,
             "report": report,
             "attack_graph": getattr(report, "attack_graph", {}) if report is not None else {},
+            "trace": getattr(report, "trace", {}) if report is not None else {},
+            "memory_graph": getattr(report, "memory_graph", {}) if report is not None else {},
+            "swarm": getattr(report, "swarm", {}) if report is not None else {},
+            "toolforge": getattr(report, "toolforge", {}) if report is not None else {},
+            "governor": getattr(report, "governor", {}) if report is not None else {},
+            "reality": getattr(report, "reality", {}) if report is not None else {},
+            "shadow": getattr(report, "shadow", {}) if report is not None else {},
+            "drift": getattr(report, "drift", {}) if report is not None else {},
+            "boardroom": getattr(report, "boardroom", {}) if report is not None else {},
             "adversarial_twin": getattr(report, "adversarial_twin", {}) if report is not None else {},
         }

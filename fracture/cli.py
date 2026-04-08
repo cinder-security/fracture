@@ -66,6 +66,8 @@ def _build_target(
     cookies: Optional[list[str]] = None,
     session_cookies: Optional[list[dict]] = None,
     timeout: int = 30,
+    body_key: Optional[str] = None,
+    body_fields: Optional[list[str]] = None,
 ):
     from fracture.core.target import AITarget
 
@@ -76,6 +78,8 @@ def _build_target(
         cookies=_parse_key_value_pairs(cookies, "cookie"),
         session_cookies=list(session_cookies or []),
         timeout=timeout,
+        body_key=body_key or None,
+        body_fields=_parse_key_value_pairs(body_fields, "body-field"),
     )
 
 
@@ -897,6 +901,48 @@ def _save_report_output(report, output_path: str, output_format: str):
     _print_output_saved("JSON report", output_path)
 
 
+def _detect_transport_error(evidence: dict) -> bool:
+    """Return True if any probe response in evidence signals a transport failure."""
+    if not isinstance(evidence, dict):
+        return False
+    for value in evidence.values():
+        if isinstance(value, dict):
+            meta_response = str(value.get("best_response", "") or "")
+            if meta_response.startswith("[error]"):
+                return True
+            for assessment_key in ("extract_assessment", "assessment", "classification"):
+                if value.get(assessment_key) == "target_transport_error":
+                    return True
+            probes = value.get("probes", [])
+            if isinstance(probes, list):
+                for probe in probes:
+                    if isinstance(probe, dict):
+                        r = str(probe.get("response", "") or "")
+                        if r.startswith("[error]"):
+                            return True
+                        if probe.get("extract_assessment") == "target_transport_error":
+                            return True
+                        if probe.get("classification") == "target_transport_error":
+                            return True
+    return False
+
+
+def _print_transport_error_hint():
+    console.print(Panel(
+        "[yellow]All or most probes returned transport-level errors.[/yellow]\n"
+        "The target may have rejected requests due to a mismatched JSON schema.\n\n"
+        "[bold]Possible causes:[/bold]\n"
+        "  • Target expects a specific field name (e.g. [cyan]message[/cyan], [cyan]input[/cyan], [cyan]query[/cyan])\n"
+        "  • Target requires a static field not included in the probe body\n"
+        "    (e.g. [cyan]session_id[/cyan], [cyan]tenant[/cyan], [cyan]api_version[/cyan])\n\n"
+        "[bold]Suggested fixes:[/bold]\n"
+        "  [dim]fracture attack --body-key message --body-field session_id=default ...[/dim]\n"
+        "  [dim]fracture start  --body-key input   --body-field tenant=myorg ...[/dim]",
+        title="[bold yellow]Transport Error — Body Schema Mismatch?[/bold yellow]",
+        border_style="yellow",
+    ))
+
+
 def _print_generic_result(result):
     module_name = getattr(result, "module", "unknown")
     success = getattr(result, "success", False)
@@ -935,6 +981,9 @@ def _print_generic_result(result):
             table.add_row(str(key), rendered)
 
         console.print(table)
+
+    if not success and _detect_transport_error(evidence):
+        _print_transport_error_hint()
 
 
 def _print_scan_result(target, fingerprint, plan: dict, discovery_mode: str = "passive"):
@@ -1292,6 +1341,16 @@ def start(
         "--timeout",
         help="HTTP timeout in seconds for target requests",
     ),
+    body_key: Optional[str] = typer.Option(
+        None,
+        "--body-key",
+        help="Override primary JSON body field name (e.g. 'message', 'input')",
+    ),
+    body_field: Optional[list[str]] = typer.Option(
+        None,
+        "--body-field",
+        help="Static JSON body field in KEY=VALUE format; repeatable (e.g. session_id=default)",
+    ),
 ):
     """Legacy compatibility command for single-module or auto engagements."""
     console.print(BANNER)
@@ -1312,6 +1371,8 @@ def start(
         headers=header,
         cookies=cookie,
         timeout=timeout,
+        body_key=body_key,
+        body_fields=body_field,
     )
 
     if module == "auto":
@@ -1584,6 +1645,16 @@ def attack(
         "--timeout",
         help="HTTP timeout in seconds for target requests",
     ),
+    body_key: Optional[str] = typer.Option(
+        None,
+        "--body-key",
+        help="Override primary JSON body field name (e.g. 'message', 'input')",
+    ),
+    body_field: Optional[list[str]] = typer.Option(
+        None,
+        "--body-field",
+        help="Static JSON body field in KEY=VALUE format; repeatable (e.g. session_id=default)",
+    ),
 ):
     """Execute one or more attack modules explicitly against a target."""
     from fracture.agents.execution import MODULE_MAP
@@ -1614,6 +1685,8 @@ def attack(
         cookies=cookie,
         session_cookies=_extract_handoff_session_cookies(handoff),
         timeout=timeout,
+        body_key=body_key,
+        body_fields=body_field,
     )
     session_context = _build_session_context(ai_target, handoff)
     if session_context.get("session_material_present"):

@@ -99,6 +99,8 @@ class AITarget:
     session_cookies: list[dict] = field(default_factory=list)
     session_context: dict = field(default_factory=dict)
     timeout: int = 30
+    body_key: Optional[str] = None
+    body_fields: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.name:
@@ -147,6 +149,18 @@ class AITarget:
             "captured_cookie_names": list(handoff_cookies.keys()),
             "session_propagation_note": propagation_note,
         }
+
+    def override_body(self, prompt: str) -> Optional[dict]:
+        """Return operator-overridden body dict if --body-key is set, else None.
+
+        When set, the final body will be:
+          {**body_fields, body_key: prompt}
+        This lets operators specify both the primary text field and any static
+        extra fields required by the target (e.g. session_id, tenant, etc.).
+        """
+        if self.body_key:
+            return {**self.body_fields, self.body_key: prompt}
+        return None
 
     def __repr__(self):
         return (

@@ -3,6 +3,18 @@ from typing import Optional
 from urllib.parse import urlparse
 
 
+def _normalize_request_body_fields(body_fields) -> dict:
+    normalized: dict[str, object] = {}
+    if not isinstance(body_fields, dict):
+        return normalized
+    for key, value in body_fields.items():
+        name = str(key or "").strip()
+        if not name:
+            continue
+        normalized[name] = value
+    return normalized
+
+
 def _normalize_cookie_mapping(cookies) -> dict[str, str]:
     normalized: dict[str, str] = {}
 
@@ -97,6 +109,8 @@ class AITarget:
     headers: dict = field(default_factory=dict)
     cookies: dict = field(default_factory=dict)
     session_cookies: list[dict] = field(default_factory=list)
+    body_key: Optional[str] = None
+    body_fields: dict = field(default_factory=dict)
     session_context: dict = field(default_factory=dict)
     timeout: int = 30
 
@@ -105,6 +119,8 @@ class AITarget:
             self.name = self.url.split("//")[-1].split("/")[0]
 
         self.session_cookies, session_context = _normalize_session_cookie_records(self.session_cookies, self.url)
+        self.body_key = str(self.body_key or "").strip() or None
+        self.body_fields = _normalize_request_body_fields(self.body_fields)
         handoff_cookies = _normalize_cookie_mapping(self.session_cookies)
         explicit_cookies = _normalize_cookie_mapping(self.cookies)
         self.cookies = {**handoff_cookies, **explicit_cookies}
@@ -152,3 +168,33 @@ class AITarget:
         return (
             f"AITarget(url={self.url}, name={self.name}, model={self.model})"
         )
+
+    def apply_request_shape(
+        self,
+        payload: dict | None = None,
+        *,
+        prompt: str | None = None,
+        body_key: str | None = None,
+        conversation=None,
+        context_key: str | None = None,
+    ) -> dict:
+        merged = {}
+        if isinstance(payload, dict):
+            merged.update(payload)
+
+        selected_body_key = str(body_key or self.body_key or "").strip() or None
+        selected_context_key = str(context_key or "").strip() or None
+
+        for key, value in self.body_fields.items():
+            if key not in {selected_body_key, selected_context_key}:
+                merged[key] = value
+
+        if selected_context_key and conversation is not None:
+            merged[selected_context_key] = conversation
+        if selected_body_key and prompt is not None:
+            merged[selected_body_key] = prompt
+
+        return merged
+
+    def override_body(self, prompt: str, *, body_key: str | None = None) -> dict:
+        return self.apply_request_shape(prompt=prompt, body_key=body_key)

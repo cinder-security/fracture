@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -611,6 +612,7 @@ class CLISmokeTests(unittest.TestCase):
                         "websocket_likely": False,
                         "request_shape_hints": ["frontend fetch/xhr observed"],
                         "observed_body_keys": ["message"],
+                        "body_fields": {"session_id": "default"},
                         "observed_query_param_names": ["mode"],
                         "observed_header_names": ["Content-Type"],
                         "observed_cookie_names": [],
@@ -627,9 +629,12 @@ class CLISmokeTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertEqual(captured["target"].url, "https://example.test/api/chat/messages")
+        self.assertEqual(captured["target"].body_key, "message")
+        self.assertEqual(captured["target"].body_fields, {"session_id": "default"})
         self.assertEqual(captured["execution_hints"]["method_hint"], "POST")
         self.assertEqual(captured["execution_hints"]["content_type_hint"], "application/json")
         self.assertEqual(captured["execution_hints"]["observed_body_keys"], ["message"])
+        self.assertEqual(captured["execution_hints"]["body_fields"], {"session_id": "default"})
         self.assertEqual(captured["execution_hints"]["observed_query_param_names"], ["mode"])
         self.assertIn("Attack Handoff", result.output)
         self.assertIn("Invocation:", result.output)
@@ -1468,6 +1473,90 @@ class CLISmokeTests(unittest.TestCase):
             self.assertEqual(payload["detected_model"], "llm-agent")
             self.assertEqual(payload["adversarial_twin"]["summary"]["overall_posture"], "attackable")
             self.assertIn("Report Cue", result.output)
+
+    def test_report_command_reuses_workspace_scan_and_attack_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "scan.json").write_text(json.dumps({
+                "target_url": "https://example.test/",
+                "fingerprint": {
+                    "module": "fingerprint",
+                    "success": True,
+                    "confidence": 0.9,
+                    "evidence": {
+                        "surface_discovery": {
+                            "details": {
+                                "handoff": {
+                                    "recommended_target_url": "https://example.test/api/chat/messages",
+                                    "intent": "chat_surface",
+                                    "invocation_profile": {
+                                        "method_hint": "POST",
+                                        "content_type_hint": "application/json",
+                                        "observed_body_keys": ["message", "session_id"],
+                                        "body_fields": {"session_id": "default"},
+                                    },
+                                }
+                            }
+                        }
+                    },
+                },
+                "triage": {
+                    "detected_model": "llm-agent",
+                    "risk_level": "high",
+                    "suggested_modules": ["extract", "hpm"],
+                },
+            }))
+            (workspace / "attack.json").write_text(json.dumps({
+                "target_url": "https://example.test/api/chat/messages",
+                "results": {
+                    "extract": {
+                        "module": "extract",
+                        "target_url": "https://example.test/api/chat/messages",
+                        "success": False,
+                        "confidence": 0.28,
+                        "notes": "Best vector: direct_elicitation — score: 28%",
+                        "evidence": {
+                            "_meta": {
+                                "extract_assessment": "partial_instruction_disclosure",
+                                "disclosure_signal_strength": "low",
+                            }
+                        },
+                    },
+                    "hpm": {
+                        "module": "hpm",
+                        "target_url": "https://example.test/api/chat/messages",
+                        "success": False,
+                        "confidence": 0.12,
+                        "notes": "HPM complete — confidence=12%",
+                        "evidence": {
+                            "_meta": {
+                                "best_classification": "harmless_paraphrase",
+                            }
+                        },
+                    },
+                },
+            }))
+            output = workspace / "report.json"
+            previous_cwd = Path.cwd()
+            os.chdir(workspace)
+            try:
+                result = self.runner.invoke(
+                    app,
+                    [
+                        "report",
+                        "--target", "https://example.test/",
+                        "--output", str(output),
+                    ],
+                )
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            payload = json.loads(output.read_text())
+            self.assertEqual(payload["findings_summary"]["possible"], 2)
+            self.assertEqual(payload["results"]["extract"]["assessment"], "possible")
+            self.assertEqual(payload["results"]["hpm"]["assessment"], "possible")
+            self.assertIn("Reusing scan.json and attack.json", result.output)
 
     def test_autopilot_command_smoke_surfaces_final_cue(self):
         captured = {}

@@ -6,6 +6,7 @@ from unittest.mock import patch
 from fracture.core.target import AITarget
 from fracture.modules.extract.engine import ExtractEngine
 from fracture.modules.fingerprint.engine import FingerprintEngine
+from fracture.modules.hpm.engine import HPMEngine
 from fracture.modules.memory.engine import MemoryEngine
 from fracture.modules.privesc.engine import PrivescEngine
 
@@ -15,6 +16,7 @@ class _DummyResponse:
         self._payload = {"response": "ok"} if payload is None else payload
         self.text = text if text is not None else str(self._payload)
         self._json_error = json_error
+        self.headers = {"content-type": "application/json"}
 
     def json(self):
         if self._json_error is not None:
@@ -142,6 +144,27 @@ class TargetContractModuleTests(unittest.TestCase):
         self.assertIn("history", post_kwargs["json"])
         self.assertNotIn("mode", json.dumps(post_kwargs["json"]))
 
+    def test_extract_probe_preserves_fixed_body_fields_from_target_shape(self):
+        target = AITarget(
+            url="https://example.test/api",
+            body_key="message",
+            body_fields={"session_id": "default"},
+        )
+        hints = {
+            "method_hint": "POST",
+            "content_type_hint": "application/json",
+            "accepts_json": True,
+            "observed_body_keys": ["message", "session_id"],
+        }
+
+        with patch("fracture.modules.extract.engine.httpx.AsyncClient", _DummyAsyncClient):
+            response = asyncio.run(ExtractEngine(target, execution_hints=hints).probe("hello"))
+
+        self.assertEqual(response, "ok")
+        _, post_kwargs = _DummyAsyncClient.instances[0].post_calls[0]
+        self.assertEqual(post_kwargs["json"]["message"], "hello")
+        self.assertEqual(post_kwargs["json"]["session_id"], "default")
+
     def test_extract_probe_normalizes_message_shape(self):
         _DummyAsyncClient.response_queue = [
             _DummyResponse(payload={"message": "normalized system prompt"})
@@ -198,6 +221,39 @@ class TargetContractModuleTests(unittest.TestCase):
         self.assertEqual(post_kwargs["headers"]["Content-Type"], "application/json")
         self.assertIn("history", post_kwargs["json"])
         self.assertIn("message", post_kwargs["json"])
+
+    def test_memory_probe_preserves_fixed_body_fields_from_target_shape(self):
+        target = AITarget(
+            url="https://example.test/api",
+            body_key="message",
+            body_fields={"session_id": "default"},
+        )
+        hints = {
+            "method_hint": "POST",
+            "content_type_hint": "application/json",
+            "accepts_json": True,
+            "observed_body_keys": ["message", "session_id"],
+        }
+
+        with patch("fracture.modules.memory.engine.httpx.AsyncClient", _DummyAsyncClient):
+            response = asyncio.run(MemoryEngine(target, execution_hints=hints).probe("hello"))
+
+        self.assertEqual(response, "ok")
+        _, post_kwargs = _DummyAsyncClient.instances[0].post_calls[0]
+        self.assertEqual(post_kwargs["json"]["session_id"], "default")
+
+    def test_hpm_send_preserves_fixed_body_fields_from_target_shape(self):
+        target = AITarget(
+            url="https://example.test/api",
+            body_fields={"session_id": "default"},
+        )
+
+        with patch("fracture.modules.hpm.engine.httpx.AsyncClient", _DummyAsyncClient):
+            response = asyncio.run(HPMEngine(target).send("hello", keep_history=False))
+
+        self.assertEqual(response, "ok")
+        _, post_kwargs = _DummyAsyncClient.instances[0].post_calls[0]
+        self.assertEqual(post_kwargs["json"]["session_id"], "default")
 
     def test_extract_run_reports_execution_hint_metadata(self):
         hints = {

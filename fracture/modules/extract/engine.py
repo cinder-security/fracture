@@ -260,10 +260,12 @@ class ExtractEngine:
             shapes.append({
                 "name": "observed_context_plus_text",
                 "strategy": "observed",
-                "payload": {
-                    context_keys[0]: base_messages,
-                    text_keys[0]: prompt,
-                },
+                "payload": self.target.apply_request_shape(
+                    prompt=prompt,
+                    body_key=text_keys[0],
+                    conversation=base_messages,
+                    context_key=context_keys[0],
+                ),
                 "body_keys": [context_keys[0], text_keys[0]],
             })
 
@@ -271,7 +273,10 @@ class ExtractEngine:
             shapes.append({
                 "name": "observed_context_only",
                 "strategy": "observed",
-                "payload": {context_keys[0]: base_messages},
+                "payload": self.target.apply_request_shape(
+                    payload={context_keys[0]: base_messages},
+                    context_key=context_keys[0],
+                ),
                 "body_keys": [context_keys[0]],
             })
 
@@ -279,14 +284,14 @@ class ExtractEngine:
             shapes.append({
                 "name": "observed_single_text",
                 "strategy": "observed",
-                "payload": {text_keys[0]: prompt},
+                "payload": self.target.override_body(prompt, body_key=text_keys[0]),
                 "body_keys": [text_keys[0]],
             })
 
         shapes.append({
             "name": "legacy_combo",
             "strategy": "legacy_fallback",
-            "payload": self._legacy_payload(prompt),
+            "payload": self.target.apply_request_shape(self._legacy_payload(prompt)),
             "body_keys": ["message", "query", "input", "messages"],
         })
 

@@ -311,6 +311,49 @@ class SurfaceDiscoveryTests(unittest.TestCase):
         self.assertIn("sessionid", handoff["observed_cookie_names"])
         self.assertNotIn("secret-cookie", str(result["details"]["invocation_profile"]))
 
+    def test_discover_surface_phantomtwin_persists_safe_fixed_body_fields(self):
+        target = AITarget(url="https://example.test/")
+
+        with patch(
+            "fracture.core.surface_discovery.httpx.AsyncClient",
+            _DummyAsyncClient,
+        ), patch(
+            "fracture.core.surface_discovery._run_phantomtwin_browser_recon",
+            AsyncMock(
+                return_value={
+                    "available": True,
+                    "requests": [
+                        {
+                            "url": "https://example.test/api/chat/messages",
+                            "method": "POST",
+                            "resource_type": "fetch",
+                            "header_names": ["Content-Type"],
+                            "cookie_names": [],
+                            "content_type_hint": "application/json",
+                            "accepts_json": True,
+                            "query_param_names": [],
+                            "body_field_hints": ["message", "session_id"],
+                            "body_fields": {"session_id": "default"},
+                            "streaming_likely": False,
+                        }
+                    ],
+                    "note": "PhantomTwin browser recon observed frontend network activity.",
+                    "rendered_html": "<html></html>",
+                    "login_form_detected": False,
+                    "session_cookies": [],
+                    "session_cookie_header": "",
+                    "session_capture_note": "",
+                }
+            ),
+        ):
+            result = asyncio.run(discover_surface(target, mode="phantomtwin"))
+
+        invocation_profile = result["details"]["invocation_profile"]
+        handoff = result["details"]["handoff"]
+        self.assertEqual(invocation_profile["body_fields"], {"session_id": "default"})
+        self.assertEqual(handoff["invocation_profile"]["body_fields"], {"session_id": "default"})
+        self.assertNotIn("message", invocation_profile["body_fields"])
+
     def test_discover_surface_classifies_oauth_redirect_wall(self):
         target = AITarget(url="https://example.test/oauth-wall")
 

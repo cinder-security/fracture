@@ -21,3 +21,6 @@ __pycache__/
 !demo/golden-workspace/scan.json
 !demo/golden-workspace/attack.json
 !demo/golden-workspace/report.json
+demo/golden-workspace/.fracture/
+platica-workspace/
+tmp/

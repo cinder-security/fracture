@@ -1632,6 +1632,7 @@ class ReportAgent(BaseAgent):
             "streaming_likely": bool(profile.get("streaming_likely")),
             "websocket_likely": bool(profile.get("websocket_likely")),
             "observed_body_keys": list(profile.get("observed_body_keys", []) or []),
+            "body_fields": dict(profile.get("body_fields", {}) or {}),
             "observed_query_param_names": list(profile.get("observed_query_param_names", []) or []),
         }
 

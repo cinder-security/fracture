@@ -67,6 +67,8 @@ def _build_target(
     headers: Optional[list[str]] = None,
     cookies: Optional[list[str]] = None,
     session_cookies: Optional[list[dict]] = None,
+    body_key: Optional[str] = None,
+    body_fields: Optional[dict] = None,
     timeout: int = 30,
 ):
     from fracture.core.target import AITarget
@@ -77,6 +79,8 @@ def _build_target(
         headers=_parse_key_value_pairs(headers, "header"),
         cookies=_parse_key_value_pairs(cookies, "cookie"),
         session_cookies=list(session_cookies or []),
+        body_key=body_key,
+        body_fields=dict(body_fields or {}),
         timeout=timeout,
     )
 
@@ -709,6 +713,7 @@ def _build_execution_hints(handoff: dict | None) -> dict | None:
         "content_type_hint": invocation_profile.get("content_type_hint"),
         "accepts_json": bool(invocation_profile.get("accepts_json")),
         "observed_body_keys": list(invocation_profile.get("observed_body_keys", []) or []),
+        "body_fields": dict(invocation_profile.get("body_fields", {}) or {}),
         "observed_query_param_names": list(invocation_profile.get("observed_query_param_names", []) or []),
         "session_required": bool(handoff.get("session_required")),
         "auth_signals": list(handoff.get("auth_signals", []) or []),
@@ -732,6 +737,7 @@ def _print_execution_hints_summary(execution_hints: dict | None):
         f"[bold]Content-Type:[/bold] [dim]{execution_hints.get('content_type_hint', 'unknown')}[/dim]\n"
         f"[bold]Accepts JSON:[/bold] [dim]{'yes' if execution_hints.get('accepts_json') else 'no'}[/dim]\n"
         f"[bold]Body Keys:[/bold]   [dim]{', '.join(execution_hints.get('observed_body_keys', [])[:4]) or 'none'}[/dim]\n"
+        f"[bold]Body Fields:[/bold] [dim]{', '.join(f'{k}={v}' for k, v in list((execution_hints.get('body_fields', {}) or {}).items())[:4]) or 'none'}[/dim]\n"
         f"[bold]Query Keys:[/bold]  [dim]{', '.join(execution_hints.get('observed_query_param_names', [])[:4]) or 'none'}[/dim]\n"
         f"[bold]Session/Auth:[/bold] [dim]{'required' if execution_hints.get('session_required') else 'not indicated'}; "
         f"{', '.join(execution_hints.get('auth_signals', [])[:3]) or 'none'}[/dim]\n"
@@ -740,6 +746,136 @@ def _print_execution_hints_summary(execution_hints: dict | None):
         title="[bold yellow]Execution Hints[/bold yellow]",
         border_style="yellow",
     ))    
+
+
+def _select_primary_body_key(body_keys: list[str] | None) -> Optional[str]:
+    ordered = [str(item or "").strip() for item in (body_keys or []) if str(item or "").strip()]
+    for key in ordered:
+        lowered = key.lower()
+        if any(token in lowered for token in ["message", "query", "input", "prompt", "text", "content", "ask"]):
+            return key
+    return ordered[0] if ordered else None
+
+
+def _request_shape_from_handoff(handoff: dict | None) -> tuple[Optional[str], dict]:
+    invocation_profile = handoff.get("invocation_profile", {}) if isinstance(handoff, dict) else {}
+    if not isinstance(invocation_profile, dict):
+        invocation_profile = {}
+    body_keys = list(invocation_profile.get("observed_body_keys", []) or [])
+    body_fields = dict(invocation_profile.get("body_fields", {}) or {})
+    return _select_primary_body_key(body_keys), body_fields
+
+
+def _deserialize_attack_result(module_name: str, payload: dict, default_target_url: str) -> "AttackResult":
+    from fracture.core.result import AttackResult
+
+    return AttackResult(
+        module=str(payload.get("module") or module_name),
+        target_url=str(payload.get("target_url") or default_target_url),
+        success=bool(payload.get("success", False)),
+        confidence=float(payload.get("confidence", 0.0) or 0.0),
+        evidence=payload.get("evidence", {}) if isinstance(payload.get("evidence", {}), dict) else {},
+        timestamp=str(payload.get("timestamp", "") or ""),
+        notes=payload.get("notes"),
+    )
+
+
+def _build_fingerprint_result(scan_payload: dict, target_url: str):
+    from fracture.core.result import AttackResult
+
+    fingerprint = scan_payload.get("fingerprint", {})
+    if not isinstance(fingerprint, dict) or not fingerprint:
+        return None
+    return AttackResult(
+        module=str(fingerprint.get("module") or "fingerprint"),
+        target_url=str(scan_payload.get("target_url") or target_url),
+        success=bool(fingerprint.get("success", False)),
+        confidence=float(fingerprint.get("confidence", 0.0) or 0.0),
+        evidence=fingerprint.get("evidence", {}) if isinstance(fingerprint.get("evidence", {}), dict) else {},
+        timestamp=str(fingerprint.get("timestamp", "") or ""),
+        notes=fingerprint.get("notes"),
+    )
+
+
+def _build_plan_from_scan_payload(scan_payload: dict) -> dict:
+    triage = scan_payload.get("triage", {}) if isinstance(scan_payload.get("triage", {}), dict) else {}
+    return {
+        "detected_model": triage.get("detected_model", "unknown"),
+        "risk_level": triage.get("risk_level", "unknown"),
+        "detected_defenses": triage.get("detected_defenses", []),
+        "attack_plan": triage.get("suggested_modules", []),
+        "analysis": triage.get("analysis", ""),
+        "rationale": triage.get("rationale", ""),
+        "planning_rationale": triage.get("planning_rationale", []),
+        "module_priority_reasons": triage.get("module_priority_reasons", {}),
+        "surface_constraints": triage.get("surface_constraints", []),
+        "planning_signals_used": triage.get("planning_signals_used", []),
+        "auth_friction_present": triage.get("auth_friction_present", False),
+        "auth_friction_rationale": triage.get("auth_friction_rationale", ""),
+        "operational_limitations": triage.get("operational_limitations", []),
+    }
+
+
+def _artifact_target_matches(target_url: str, scan_payload: dict, attack_payload: dict) -> bool:
+    candidates = {
+        str(target_url or "").strip(),
+        str(scan_payload.get("target_url") or "").strip(),
+        str(attack_payload.get("target_url") or "").strip(),
+    }
+    handoff = scan_payload.get("handoff", {}) if isinstance(scan_payload.get("handoff", {}), dict) else {}
+    candidates.add(str(handoff.get("recommended_target_url") or "").strip())
+    candidates.discard("")
+    return str(target_url or "").strip() in candidates
+
+
+def _load_reusable_report_artifacts(target_url: str, output: Optional[str]) -> dict | None:
+    search_roots = [Path.cwd()]
+    if output:
+        search_roots.append(Path(output).expanduser().resolve().parent)
+
+    seen = set()
+    for root in search_roots:
+        if root in seen:
+            continue
+        seen.add(root)
+        scan_payload = _load_workspace_json(root / "scan.json")
+        attack_payload = _load_workspace_json(root / "attack.json")
+        if not isinstance(scan_payload, dict) or not isinstance(attack_payload, dict):
+            continue
+        if not _artifact_target_matches(target_url, scan_payload, attack_payload):
+            continue
+        return {
+            "workspace": root,
+            "scan": scan_payload,
+            "attack": attack_payload,
+        }
+    return None
+
+
+async def _run_report_from_artifacts(target, artifacts: dict, output_path: Optional[str] = None):
+    from fracture.agents.report import ReportAgent
+
+    scan_payload = artifacts.get("scan", {}) if isinstance(artifacts.get("scan"), dict) else {}
+    attack_payload = artifacts.get("attack", {}) if isinstance(artifacts.get("attack"), dict) else {}
+    attack_results_payload = attack_payload.get("results", {}) if isinstance(attack_payload.get("results", {}), dict) else {}
+
+    fingerprint = _build_fingerprint_result(scan_payload, target.url)
+    plan = _build_plan_from_scan_payload(scan_payload)
+    attack_results = {
+        module_name: _deserialize_attack_result(module_name, payload, target.url)
+        for module_name, payload in attack_results_payload.items()
+        if isinstance(payload, dict)
+    }
+    baseline_report = _load_optional_json(output_path)
+
+    report_agent = ReportAgent(target, console=console)
+    return await report_agent.run(
+        fingerprint=fingerprint,
+        plan=plan,
+        attack_results=attack_results,
+        baseline_report=baseline_report,
+        output_path=output_path,
+    )
 
 
 def _print_attack_graph_summary(attack_graph: dict | None):
@@ -1662,6 +1798,8 @@ def attack(
         headers=header,
         cookies=cookie,
         session_cookies=_extract_handoff_session_cookies(handoff),
+        body_key=_request_shape_from_handoff(handoff)[0],
+        body_fields=_request_shape_from_handoff(handoff)[1],
         timeout=timeout,
     )
     session_context = _build_session_context(ai_target, handoff)
@@ -1906,8 +2044,15 @@ def report(
         elif suffix == ".json":
             report_format = "json"
 
-    results = asyncio.run(_run_auto(ai_target, output=None, planner=planner))
-    report_obj = results.get("report") if isinstance(results, dict) else None
+    reusable_artifacts = _load_reusable_report_artifacts(target, output)
+    if reusable_artifacts:
+        console.print(
+            f"[yellow]Reusing scan.json and attack.json from {reusable_artifacts['workspace']} for report generation.[/yellow]"
+        )
+        report_obj = asyncio.run(_run_report_from_artifacts(ai_target, reusable_artifacts, output_path=None))
+    else:
+        results = asyncio.run(_run_auto(ai_target, output=None, planner=planner))
+        report_obj = results.get("report") if isinstance(results, dict) else None
 
     if output and report_obj is not None:
         _save_report_output(report_obj, output, report_format)

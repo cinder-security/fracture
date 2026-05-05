@@ -705,7 +705,7 @@ class HPMEngine:
             query_only_payload["model"] = model
 
         if "ollama" in model_lower or "llama" in model_lower:
-            return [
+            candidates = [
                 ("ollama-generate", ollama_generate_payload),
                 ("ollama-chat", ollama_chat_payload),
                 ("chat-basic", chat_basic_payload),
@@ -713,9 +713,10 @@ class HPMEngine:
                 ("input-only", input_only_payload),
                 ("query-only", query_only_payload),
             ]
+            return [(name, self.target.apply_request_shape(payload)) for name, payload in candidates]
 
         if any(name in model_lower for name in ["gpt", "openai", "claude", "gemini"]):
-            return [
+            candidates = [
                 ("openai-like", openai_like_payload),
                 ("chat-basic", chat_basic_payload),
                 ("input-only", input_only_payload),
@@ -723,8 +724,9 @@ class HPMEngine:
                 ("ollama-chat", ollama_chat_payload),
                 ("ollama-generate", ollama_generate_payload),
             ]
+            return [(name, self.target.apply_request_shape(payload)) for name, payload in candidates]
 
-        return [
+        candidates = [
             ("openai-like", openai_like_payload),
             ("chat-basic", chat_basic_payload),
             ("ollama-generate", ollama_generate_payload),
@@ -732,6 +734,7 @@ class HPMEngine:
             ("input-only", input_only_payload),
             ("query-only", query_only_payload),
         ]
+        return [(name, self.target.apply_request_shape(payload)) for name, payload in candidates]
 
     async def _post_payload(self, payload: dict[str, Any]) -> str:
         async with httpx.AsyncClient(

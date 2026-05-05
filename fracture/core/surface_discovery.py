@@ -666,6 +666,50 @@ def _extract_body_field_hints(post_data: str, content_type: str) -> list[str]:
     return []
 
 
+def _extract_safe_body_fields(post_data: str, content_type: str) -> dict:
+    raw = str(post_data or "")
+    lowered_type = _lower(content_type)
+    if not raw:
+        return {}
+
+    sensitive_tokens = ("token", "secret", "authorization", "cookie", "csrf", "xsrf", "password", "key")
+    prompt_tokens = ("message", "messages", "query", "input", "prompt", "history", "conversation", "content", "text")
+
+    def allowed_scalar(value) -> bool:
+        if isinstance(value, bool) or value is None:
+            return True
+        if isinstance(value, (int, float)):
+            return True
+        if isinstance(value, str):
+            compact = value.strip()
+            return bool(compact) and len(compact) <= 64 and "\n" not in compact and "\r" not in compact
+        return False
+
+    def allowed_key(name: str) -> bool:
+        lowered = name.lower()
+        return not any(token in lowered for token in sensitive_tokens + prompt_tokens)
+
+    payload = None
+    if "json" in lowered_type or raw.lstrip().startswith(("{", "[")):
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = None
+    elif "x-www-form-urlencoded" in lowered_type:
+        payload = dict(parse_qsl(raw, keep_blank_values=True))
+
+    if not isinstance(payload, dict):
+        return {}
+
+    safe_fields = {}
+    for key, value in payload.items():
+        name = str(key or "").strip()
+        if not name or not allowed_key(name) or not allowed_scalar(value):
+            continue
+        safe_fields[name] = value
+    return safe_fields
+
+
 def _build_invocation_profile(best_candidate: dict | None, browser_requests: list[dict], probe: dict | None = None) -> dict | None:
     if not isinstance(best_candidate, dict) or not best_candidate.get("url"):
         return None
@@ -701,6 +745,7 @@ def _build_invocation_profile(best_candidate: dict | None, browser_requests: lis
     )
 
     observed_body_keys = list(observed.get("body_field_hints", []) or [])[:10]
+    observed_body_fields = observed.get("body_fields", {}) if isinstance(observed.get("body_fields", {}), dict) else {}
     observed_query_param_names = list(observed.get("query_param_names", []) or [])[:10]
     observed_header_names = list(observed.get("header_names", []) or [])[:16]
     observed_cookie_names = list(observed.get("cookie_names", []) or [])[:12]
@@ -726,6 +771,8 @@ def _build_invocation_profile(best_candidate: dict | None, browser_requests: lis
         invocation_notes.append(f"Observed {method_hint} request shape for the candidate endpoint.")
     if observed_body_keys:
         invocation_notes.append("Only body field names were retained; no body values or prompts were persisted.")
+    if observed_body_fields:
+        invocation_notes.append("Stable non-prompt body fields were retained for request replay.")
     if observed_query_param_names:
         invocation_notes.append("Only query parameter names were retained; no parameter values were persisted.")
 
@@ -737,6 +784,7 @@ def _build_invocation_profile(best_candidate: dict | None, browser_requests: lis
         "websocket_likely": bool(websocket_likely),
         "request_shape_hints": request_shape_hints[:6],
         "observed_body_keys": observed_body_keys,
+        "body_fields": observed_body_fields,
         "observed_query_param_names": observed_query_param_names,
         "observed_header_names": observed_header_names,
         "observed_cookie_names": observed_cookie_names,
@@ -941,6 +989,7 @@ async def _run_phantomtwin_browser_recon(target) -> dict:
                         "accepts_json": "json" in _lower(accept_header),
                         "query_param_names": _extract_query_param_names(request.url),
                         "body_field_hints": _extract_body_field_hints(post_data, content_type_hint),
+                        "body_fields": _extract_safe_body_fields(post_data, content_type_hint),
                         "streaming_likely": "event-stream" in _lower(accept_header) or "text/event-stream" in _lower(content_type_hint),
                     }
                 )

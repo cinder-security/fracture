@@ -331,6 +331,48 @@ class CLISmokeTests(unittest.TestCase):
             self.assertIn("Auth Rationale:", result.output)
             self.assertIn("Operator Cue", result.output)
 
+    def test_campaign_init_and_compare_commands(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            scan_payload = {"target_url": "https://example.test", "fingerprint": {"success": True}}
+            attack_payload = {
+                "target_url": "https://example.test",
+                "results": {"extract": {"assessment": "probable"}},
+                "shadow": {
+                    "replay_readiness": "medium",
+                    "replay_safety": "safe",
+                    "validation_window": "focused",
+                    "request_shape": {"method": "POST"},
+                    "result_summary": {"recommended_action": "bounded_shadow_replay"},
+                },
+            }
+            report_payload = {
+                "target_url": "https://example.test",
+                "risk_level": "high",
+                "modules_run": 3,
+                "modules_succeeded": 2,
+                "avg_asr": 0.66,
+                "findings_summary": {"confirmed": 1, "probable": 0, "possible": 1, "negative": 1},
+                "shadow": attack_payload["shadow"],
+            }
+            for name, payload in {"scan": scan_payload, "attack": attack_payload, "report": report_payload}.items():
+                (workspace / f"{name}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+            init_result = self.runner.invoke(
+                app,
+                ["campaign", "init", "--workspace", str(workspace), "--name", "golden-phase4"],
+            )
+            self.assertEqual(init_result.exit_code, 0, init_result.output)
+            self.assertIn("baseline run", init_result.output)
+
+            compare_result = self.runner.invoke(
+                app,
+                ["campaign", "compare", "--workspace", str(workspace), "--name", "golden-phase4"],
+            )
+            self.assertEqual(compare_result.exit_code, 0, compare_result.output)
+            self.assertIn("Campaign Compare", compare_result.output)
+            self.assertIn("golden-phase4", compare_result.output)
+
     def test_scan_command_distinguishes_discovery_error_from_auth_friction(self):
         async def fake_run_scan(target, planner="local", discovery_mode="passive"):
             return {

@@ -5,6 +5,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Optional
 
+from fracture.core.campaigns import get_campaign_latest
+
 DEMO_WORKSPACE_PATH = Path(__file__).resolve().parents[2] / "demo" / "golden-workspace"
 
 SENSITIVE_KEY_TOKENS = (
@@ -621,6 +623,11 @@ def _resolve_artifact_paths(
         for name in ("scan", "attack", "report"):
             if resolved[name] is None:
                 resolved[name] = _discover_workspace_artifact(workspace_path, name)
+        if not any(resolved.values()):
+            campaign_paths = _discover_campaign_latest_artifacts(workspace_path)
+            for name in ("scan", "attack", "report"):
+                if resolved[name] is None:
+                    resolved[name] = campaign_paths.get(name)
 
     if not any(resolved.values()):
         raise ValueError("No UI artifacts were found. Expected scan.json, attack.json or report.json.")
@@ -638,6 +645,32 @@ def _discover_workspace_artifact(workspace: Path, name: str) -> Optional[Path]:
     if suffix_matches:
         return suffix_matches[0]
     return None
+
+
+def _discover_campaign_latest_artifacts(workspace: Path) -> dict[str, Optional[Path]]:
+    campaigns_root = workspace / ".fracture" / "campaigns"
+    if not campaigns_root.exists():
+        return {"scan": None, "attack": None, "report": None}
+
+    for campaign_dir in sorted(path for path in campaigns_root.iterdir() if path.is_dir()):
+        try:
+            latest = get_campaign_latest(workspace, campaign_dir.name)
+        except Exception:
+            continue
+        if not isinstance(latest, dict):
+            continue
+        run_id = str(latest.get("run_id", "") or "").strip()
+        if not run_id:
+            continue
+        run_dir = campaign_dir / "runs" / run_id
+        if not run_dir.exists():
+            continue
+        return {
+            "scan": run_dir / "scan.json" if (run_dir / "scan.json").exists() else None,
+            "attack": run_dir / "attack.json" if (run_dir / "attack.json").exists() else None,
+            "report": run_dir / "report.json" if (run_dir / "report.json").exists() else None,
+        }
+    return {"scan": None, "attack": None, "report": None}
 
 
 def _load_optional_json(path: Optional[Path]) -> Optional[dict]:

@@ -13,6 +13,8 @@ app = typer.Typer(
     help="Autonomous AI Red Team Engine",
     add_completion=False,
 )
+campaign_app = typer.Typer(help="Phase 4.1 campaign registry commands.")
+app.add_typer(campaign_app, name="campaign")
 console = Console()
 
 BANNER = """[bold red]
@@ -107,6 +109,53 @@ def _auth_material_types(headers: dict, cookies: dict) -> list[str]:
 
 def _print_output_saved(label: str, output_path: str):
     console.print(f"\n[dim]{label} saved to {output_path}[/dim]")
+
+
+def _load_workspace_json(path: Path) -> Optional[dict]:
+    if not path.exists():
+        return None
+    with open(path, "r") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Artifact '{path}' does not contain a JSON object.")
+    return payload
+
+
+def _campaign_root_artifacts(workspace_path: Path) -> dict[str, Optional[dict]]:
+    scan_payload = _load_workspace_json(workspace_path / "scan.json")
+    attack_payload = _load_workspace_json(workspace_path / "attack.json")
+    report_payload = _load_workspace_json(workspace_path / "report.json")
+    shadow_payload = None
+    if isinstance(report_payload, dict) and isinstance(report_payload.get("shadow"), dict):
+        shadow_payload = report_payload.get("shadow")
+    elif isinstance(attack_payload, dict) and isinstance(attack_payload.get("shadow"), dict):
+        shadow_payload = attack_payload.get("shadow")
+    return {
+        "scan": scan_payload,
+        "attack": attack_payload,
+        "report": report_payload,
+        "shadow": shadow_payload,
+    }
+
+
+def _print_campaign_compare(summary: dict) -> None:
+    findings_delta = summary.get("findings_delta", {}) if isinstance(summary.get("findings_delta"), dict) else {}
+    shadow_delta = summary.get("shadow_delta", {}) if isinstance(summary.get("shadow_delta"), dict) else {}
+    console.print(Panel(
+        f"[bold]Campaign:[/bold] [cyan]{summary.get('campaign', 'unknown')}[/cyan]\n"
+        f"[bold]Target:[/bold] [dim]{summary.get('target_url', 'unknown')}[/dim]\n"
+        f"[bold]Baseline:[/bold] [dim]{summary.get('baseline_run_id', 'unknown')}[/dim]\n"
+        f"[bold]Latest:[/bold] [dim]{summary.get('candidate_run_id', 'unknown')}[/dim]\n"
+        f"[bold]Risk:[/bold] [dim]{summary.get('risk_level_before', 'unknown')} -> {summary.get('risk_level_after', 'unknown')}[/dim]\n"
+        f"[bold]Modules Delta:[/bold] [dim]{summary.get('modules_succeeded_delta', 0)}[/dim]\n"
+        f"[bold]ASR Delta:[/bold] [dim]{summary.get('avg_asr_delta', 0.0)}[/dim]\n"
+        f"[bold]Findings Delta:[/bold] [dim]confirmed={findings_delta.get('confirmed', 0)} probable={findings_delta.get('probable', 0)} possible={findings_delta.get('possible', 0)} negative={findings_delta.get('negative', 0)}[/dim]\n"
+        f"[bold]Shadow:[/bold] [dim]{shadow_delta.get('replay_readiness_before', 'unknown')} -> {shadow_delta.get('replay_readiness_after', 'unknown')} / "
+        f"{shadow_delta.get('replay_safety_before', 'unknown')} -> {shadow_delta.get('replay_safety_after', 'unknown')} / "
+        f"{shadow_delta.get('validation_window_before', 'unknown')} -> {shadow_delta.get('validation_window_after', 'unknown')}[/dim]",
+        title="[bold red]Campaign Compare[/bold red]",
+        border_style="red",
+    ))
 
 
 def _format_policy_summary_for_console(result: dict) -> str:
@@ -1863,6 +1912,53 @@ def report(
     if output and report_obj is not None:
         _save_report_output(report_obj, output, report_format)
     _print_report_operator_cue(report_obj, output, report_format)
+
+
+@campaign_app.command("init")
+def campaign_init(
+    workspace: str = typer.Option(".", "--workspace", help="Workspace directory for campaign state"),
+    name: str = typer.Option(..., "--name", help="Campaign name"),
+):
+    """Initialize a Phase 4.1 campaign and optionally snapshot root artifacts."""
+    from fracture.core.campaigns import init_campaign, save_campaign_run, set_campaign_baseline
+
+    workspace_path = Path(workspace).expanduser().resolve()
+    manifest = init_campaign(workspace_path, name)
+    artifacts = _campaign_root_artifacts(workspace_path)
+    available = [artifact_name for artifact_name, payload in artifacts.items() if payload is not None and artifact_name != "shadow"]
+
+    console.print(Panel(
+        f"[bold]Campaign:[/bold] [cyan]{name}[/cyan]\n"
+        f"[bold]Workspace:[/bold] [dim]{workspace_path}[/dim]\n"
+        f"[bold]Root Artifacts:[/bold] [dim]{', '.join(available) or 'none'}[/dim]",
+        title="[bold red]Campaign Init[/bold red]",
+        border_style="red",
+    ))
+
+    if all(artifacts.get(name) is not None for name in ("scan", "attack", "report")):
+        run_record = save_campaign_run(workspace_path, name, artifacts)
+        baseline = set_campaign_baseline(workspace_path, name, run_record["run_id"])
+        console.print(
+            f"[green]Initialized campaign '{name}' with baseline run {baseline['run_id']}.[/green]"
+        )
+    else:
+        console.print(
+            "[yellow]Campaign created without initial run because scan.json, attack.json and report.json were not all present in the workspace root.[/yellow]"
+        )
+
+    _ = manifest
+
+
+@campaign_app.command("compare")
+def campaign_compare(
+    workspace: str = typer.Option(".", "--workspace", help="Workspace directory for campaign state"),
+    name: str = typer.Option(..., "--name", help="Campaign name"),
+):
+    """Compare campaign baseline versus latest."""
+    from fracture.core.campaigns import compare_campaign_runs
+
+    summary = compare_campaign_runs(Path(workspace).expanduser().resolve(), name)["summary"]
+    _print_campaign_compare(summary)
 
 
 @app.command()

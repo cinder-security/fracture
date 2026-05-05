@@ -9,6 +9,7 @@ from rich.table import Table
 
 from fracture.agents.base import BaseAgent
 from fracture.core.result import AttackResult
+from fracture.core.shadow_replay import build_shadow_replay
 
 
 def _dedupe(items):
@@ -730,66 +731,40 @@ class ReportAgent(BaseAgent):
     ) -> dict:
         plan = plan or {}
         report_results = report_results or {}
-        adversarial_twin = adversarial_twin or {}
         surface_details = self._extract_surface_details(fingerprint)
         handoff = handoff or (surface_details.get("handoff", {}) if isinstance(surface_details.get("handoff", {}), dict) else {}) or {}
-        twin_summary = adversarial_twin.get("summary", {}) if isinstance(adversarial_twin.get("summary", {}), dict) else {}
-        auth_profile = adversarial_twin.get("auth_profile", {}) if isinstance(adversarial_twin.get("auth_profile", {}), dict) else {}
-        session_profile = adversarial_twin.get("session_profile", {}) if isinstance(adversarial_twin.get("session_profile", {}), dict) else {}
-        invocation_profile = adversarial_twin.get("invocation_profile", {}) if isinstance(adversarial_twin.get("invocation_profile", {}), dict) else {}
         session_context = session_context or self._extract_session_context(handoff)
         execution_hints = execution_hints or self._extract_execution_hints(handoff)
-
-        session_required = bool(handoff.get("session_required", surface_details.get("session_required", False)))
+        replay = build_shadow_replay(
+            handoff=handoff,
+            session_context=session_context,
+            execution_hints=execution_hints,
+            plan=plan,
+            report_results=report_results,
+        )
+        replay_readiness = replay.get("replay_readiness", "low")
+        replay_safety = replay.get("replay_safety", "guarded")
+        validation_window = replay.get("validation_window", "narrow")
+        request_shape = replay.get("request_shape", {}) if isinstance(replay.get("request_shape"), dict) else {}
+        result_summary = replay.get("result_summary", {}) if isinstance(replay.get("result_summary"), dict) else {}
+        positive_modules = list(result_summary.get("positive_modules", []) or [])
         browser_session_likely = bool(handoff.get("browser_session_likely", surface_details.get("browser_session_likely", False)))
-        auth_wall_type = str(auth_profile.get("auth_wall_type", handoff.get("auth_wall_type", "no_auth_wall")) or "no_auth_wall")
-        session_present = bool(
-            session_context.get("session_material_present")
-            or session_profile.get("session_material_present", handoff.get("session_material_present", False))
-        )
-        transport_live = bool(execution_hints.get("streaming_likely")) or bool(execution_hints.get("websocket_likely")) or bool(invocation_profile.get("streaming_likely")) or bool(invocation_profile.get("websocket_likely"))
-        attackability = str(twin_summary.get("attackability", "low") or "low")
-        positive_count = sum(
-            1
-            for entry in report_results.values()
-            if isinstance(entry, dict) and str(entry.get("assessment", "negative") or "negative") in {"confirmed", "probable"}
-        )
-
-        replay_readiness = "low"
-        if session_present:
-            replay_readiness = "high"
-        elif attackability in {"medium", "high"} and not session_required:
-            replay_readiness = "medium"
-
-        replay_safety = "guarded"
-        if auth_wall_type == "no_auth_wall" and not transport_live:
-            replay_safety = "safe"
-        elif session_present or browser_session_likely:
-            replay_safety = "mirrored"
-
-        validation_window = "narrow"
-        if replay_readiness == "high" and positive_count >= 2:
-            validation_window = "broad"
-        elif replay_readiness == "medium":
-            validation_window = "focused"
-
-        recommended_move = "collect_shadow_artifacts"
-        if replay_readiness == "high":
-            recommended_move = "replay_in_shadow_mode"
-        elif replay_safety == "mirrored":
-            recommended_move = "mirror_session_then_replay"
-        elif transport_live:
-            recommended_move = "capture_live_transport_shape"
+        session_required = bool(handoff.get("session_required", surface_details.get("session_required", False)))
 
         return self._compact(
             {
+                "replay_readiness": replay_readiness,
+                "replay_safety": replay_safety,
+                "validation_window": validation_window,
+                "request_shape": request_shape,
+                "result_summary": result_summary,
                 "profile": {
                     "replay_readiness": replay_readiness,
                     "replay_safety": replay_safety,
                     "validation_window": validation_window,
-                    "transport_live": transport_live,
-                    "auth_wall_type": auth_wall_type,
-                    "session_present": session_present,
+                    "transport_live": bool(request_shape.get("streaming_likely")) or bool(request_shape.get("websocket_likely")),
+                    "auth_wall_type": str(handoff.get("auth_wall_type", "no_auth_wall") or "no_auth_wall"),
+                    "session_present": bool(session_context.get("session_material_present", False)),
                 },
                 "constraints": _dedupe(
                     list(plan.get("operational_limitations", []) or [])
@@ -801,9 +776,9 @@ class ReportAgent(BaseAgent):
                     "replay_readiness": replay_readiness,
                     "replay_safety": replay_safety,
                     "validation_window": validation_window,
-                    "auth_dependency": "session" if session_required or session_present else "none",
-                    "positive_modules": positive_count,
-                    "recommended_move": recommended_move,
+                    "auth_dependency": "session" if session_required or session_context.get("session_material_present", False) else "none",
+                    "positive_modules": len(positive_modules),
+                    "recommended_move": result_summary.get("recommended_action", "bounded_shadow_replay"),
                 },
             }
         )

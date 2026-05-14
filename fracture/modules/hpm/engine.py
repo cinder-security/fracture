@@ -650,7 +650,11 @@ class HPMEngine:
         return [f"{objective_primary}."]
 
     async def send(self, prompt: str, keep_history: bool = True) -> str:
-        payload_candidates = self._build_payload_candidates(prompt, keep_history=keep_history)
+        _override = self.target.override_body(prompt)
+        if _override is not None:
+            payload_candidates = [("operator-override", _override)]
+        else:
+            payload_candidates = self._build_payload_candidates(prompt, keep_history=keep_history)
 
         last_error = None
         for adapter_name, payload in payload_candidates:

@@ -310,6 +310,9 @@ class MemoryEngine:
         return sequences
 
     def _build_probe_payload_shapes(self, prompt, use_history=True, conversation_override=None):
+        _override = self.target.override_body(prompt)
+        if _override is not None:
+            return [{"name": "operator-override", "strategy": "operator", "payload": _override, "body_keys": list(_override.keys())}], list(_override.keys())
         conversation = conversation_override if conversation_override is not None else (
             self.session_history if use_history else [{"role": "user", "content": prompt}]
         )
